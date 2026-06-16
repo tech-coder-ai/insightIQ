@@ -126,3 +126,52 @@ class DocumentChunk(Base):
     char_end: Mapped[int] = mapped_column()
     page_number: Mapped[int | None] = mapped_column(nullable=True)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class Dashboard(Base):
+    __tablename__ = "dashboards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    global_filters_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    team_access_json: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DashboardCard(Base):
+    __tablename__ = "dashboard_cards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    title: Mapped[str] = mapped_column(String(300))
+    card_type: Mapped[str] = mapped_column(String(64))
+    layout_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    refresh_mode: Mapped[str] = mapped_column(String(32), default="snapshot")  # live | snapshot
+    source_type: Mapped[str] = mapped_column(String(32))  # sql | rag | prompt
+    source_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    snapshot_response_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    auto_refresh_seconds: Mapped[int | None] = mapped_column(nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DashboardShare(Base):
+    __tablename__ = "dashboard_shares"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    read_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

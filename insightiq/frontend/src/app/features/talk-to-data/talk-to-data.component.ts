@@ -3,6 +3,7 @@ import { Component, OnInit, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
+import { DashboardService } from '../../core/dashboard.service';
 import { API_BASE } from '../../core/api.config';
 import { AuthService } from '../../core/auth.service';
 import { ChatSidebarComponent } from '../../shared/chat-sidebar.component';
@@ -98,6 +99,9 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
               <pre class="sql">{{ lastSql }}</pre>
             }
             <app-response-renderer [payload]="lastResponse" />
+            @if (lastResponse) {
+              <button type="button" class="pin" (click)="pinToDashboard()">Pin to dashboard</button>
+            }
           </section>
         </div>
       </div>
@@ -189,7 +193,15 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
       .msg {
         font-size: 13px;
       }
-      @media (max-width: 900px) {
+      .pin {
+        margin-top: 12px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(88, 166, 255, 0.2);
+        color: inherit;
+        cursor: pointer;
+      }
         .layout {
           flex-direction: column;
         }
@@ -204,6 +216,7 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
   ],
 })
 export class TalkToDataComponent implements OnInit {
+  private readonly dashboardService = inject(DashboardService);
   private readonly http = inject(HttpClient);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
@@ -214,6 +227,7 @@ export class TalkToDataComponent implements OnInit {
   statusMessage = '';
   lastSql = '';
   lastResponse: ResponsePayload | null = null;
+  lastAskMeta: { sql: string; datasourceId: string; question: string } | null = null;
   conversationId: string | null = null;
   selectedSourceId = '';
   sourceTab: 'postgres' | 's3' = 'postgres';
@@ -334,11 +348,52 @@ export class TalkToDataComponent implements OnInit {
           this.conversationId = res.conversation_id;
           this.lastSql = res.sql;
           this.lastResponse = res.response;
+          this.lastAskMeta = {
+            sql: res.sql,
+            datasourceId: v.datasourceId!,
+            question: v.question!,
+          };
         },
         error: (err) => {
           this.statusMessage = err?.error?.detail ?? 'Query failed';
         },
       });
+  }
+
+  pinToDashboard(): void {
+    if (!this.lastResponse || !this.lastAskMeta) return;
+    const name = window.prompt('Dashboard name (or leave default to use first dashboard)', 'My Dashboard');
+    this.dashboardService.list().subscribe({
+      next: (dashboards) => {
+        const pin = (dashboardId: string) => {
+          this.dashboardService
+            .pinCard(dashboardId, {
+              title: this.lastAskMeta!.question,
+              card_type: this.lastResponse!.response_type,
+              response: this.lastResponse!,
+              source_type: 'sql',
+              source_config: {
+                datasource_id: this.lastAskMeta!.datasourceId,
+                sql: this.lastAskMeta!.sql,
+                question: this.lastAskMeta!.question,
+              },
+              refresh_mode: 'live',
+            })
+            .subscribe({
+              next: () => {
+                this.statusMessage = 'Pinned to dashboard.';
+              },
+            });
+        };
+        if (dashboards.length) {
+          pin(dashboards[0].id);
+        } else {
+          this.dashboardService.create(name || 'My Dashboard').subscribe({
+            next: (d) => pin(d.id),
+          });
+        }
+      },
+    });
   }
 
   onSelectConversation(id: string): void {

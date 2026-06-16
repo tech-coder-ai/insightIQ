@@ -31,6 +31,7 @@ type HealthzResponse = { status: string };
           <a routerLink="/login">Login / Register</a>
           <a routerLink="/talk-to-data">Talk to Data</a>
           <a routerLink="/talk-to-docs">Talk to Documents</a>
+          <a routerLink="/dashboards">Dashboards</a>
         </div>
       </div>
     </div>
