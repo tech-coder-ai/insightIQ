@@ -1,0 +1,28 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Node / Angular
+node_modules/
+dist/
+.angular/
+
+# Local env / secrets
+.env
+*.pem
+
+# Docker volumes (if ever bind-mounted)
+**/postgres_data/
+**/qdrant_data/
+**/neo4j_data/
+**/minio_data/
+**/grafana_data/
