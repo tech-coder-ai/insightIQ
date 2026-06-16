@@ -32,6 +32,7 @@ type HealthzResponse = { status: string };
           <a routerLink="/talk-to-data">Talk to Data</a>
           <a routerLink="/talk-to-docs">Talk to Documents</a>
           <a routerLink="/dashboards">Dashboards</a>
+          <a routerLink="/prompt-studio">Prompt Studio</a>
         </div>
       </div>
     </div>

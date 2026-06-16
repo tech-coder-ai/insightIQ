@@ -8,6 +8,7 @@ from services.auth.api import router as auth_router
 from services.chat.api import router as chat_router
 from services.talk_to_data.api import router as talk_to_data_router
 from services.talk_to_docs.api import router as talk_to_docs_router
+from services.prompt_studio.api import router as prompt_studio_router
 from services.dashboards.api import public_router as dashboards_public_router
 from services.dashboards.api import router as dashboards_router
 
@@ -35,4 +36,5 @@ app.include_router(talk_to_data_router)
 app.include_router(talk_to_docs_router)
 app.include_router(dashboards_router)
 app.include_router(dashboards_public_router)
+app.include_router(prompt_studio_router)
 

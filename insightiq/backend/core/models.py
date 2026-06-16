@@ -175,3 +175,55 @@ class DashboardShare(Base):
     read_only: Mapped[bool] = mapped_column(Boolean, default=True)
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text(), default="")
+    bindings_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    is_shared: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PromptVersion(Base):
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    version_number: Mapped[int] = mapped_column()
+    template_body: Mapped[str] = mapped_column(Text())
+    system_prompt: Mapped[str] = mapped_column(Text(), default="")
+    variables_schema_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PromptRun(Base):
+    __tablename__ = "prompt_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    variables_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    rendered_prompt: Mapped[str] = mapped_column(Text())
+    output: Mapped[str] = mapped_column(Text())
+    eval_scores_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    response_payload_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

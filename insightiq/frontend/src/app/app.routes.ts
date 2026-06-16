@@ -4,6 +4,7 @@ import { DashboardCanvasComponent } from './features/dashboards/dashboard-canvas
 import { DashboardListComponent } from './features/dashboards/dashboard-list.component';
 import { PublicDashboardComponent } from './features/dashboards/public-dashboard.component';
 import { LoginComponent } from './features/auth/login.component';
+import { PromptStudioComponent } from './features/prompt-studio/prompt-studio.component';
 import { TalkToDataComponent } from './features/talk-to-data/talk-to-data.component';
 import { TalkToDocsComponent } from './features/talk-to-docs/talk-to-docs.component';
 import { HomeComponent } from './home.component';
@@ -16,4 +17,5 @@ export const routes: Routes = [
   { path: 'dashboards', component: DashboardListComponent },
   { path: 'dashboards/:id', component: DashboardCanvasComponent },
   { path: 'd/:token', component: PublicDashboardComponent },
+  { path: 'prompt-studio', component: PromptStudioComponent },
 ];

@@ -46,6 +46,9 @@ type ResponsePayload = {
               [rows]="tableRows"
             />
           }
+          @case ('explanation') {
+            <div class="explanation">{{ payload.data['output'] }}</div>
+          }
           @default {
             <pre>{{ payload | json }}</pre>
           }
@@ -94,6 +97,10 @@ type ResponsePayload = {
         height: 100%;
         background: #58a6ff;
         border-radius: 999px;
+      }
+      .explanation {
+        line-height: 1.5;
+        white-space: pre-wrap;
       }
     `,
   ],
