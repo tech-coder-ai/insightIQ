@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from core.data.schema import SchemaMetadata
+
 
 class DataSourceConfig(BaseModel):
     tenant_id: str
@@ -25,6 +27,9 @@ class ValidationResult(BaseModel):
 class IDBConnector(ABC):
     @abstractmethod
     async def test_connection(self) -> bool: ...
+
+    @abstractmethod
+    async def introspect_schema(self) -> SchemaMetadata: ...
 
     @abstractmethod
     async def execute_query(self, sql: str) -> QueryResult: ...

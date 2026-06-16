@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -61,7 +61,30 @@ class DataSource(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
 
     name: Mapped[str] = mapped_column(String(200))
-    db_type: Mapped[str] = mapped_column(String(64))  # e.g. "postgres"
+    db_type: Mapped[str] = mapped_column(String(64))
+    dialect: Mapped[str] = mapped_column(String(64), default="postgres")
     connection_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    schema_snapshot_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    relationships_json: Mapped[list] = mapped_column(JSONB, default=list)
+    glossary_json: Mapped[list] = mapped_column(JSONB, default=list)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    title: Mapped[str] = mapped_column(String(300), default="New conversation")
+    folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    tags: Mapped[list] = mapped_column(JSONB, default=list)
+    starred: Mapped[bool] = mapped_column(Boolean, default=False)
+    datasource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
