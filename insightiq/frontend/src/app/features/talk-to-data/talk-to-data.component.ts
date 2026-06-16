@@ -5,82 +5,121 @@ import { Router } from '@angular/router';
 
 import { API_BASE } from '../../core/api.config';
 import { AuthService } from '../../core/auth.service';
-import { DataTableComponent } from '../../shared/data-table.component';
+import { ChatSidebarComponent } from '../../shared/chat-sidebar.component';
+import { ResponseRendererComponent } from '../../shared/response-renderer.component';
+import { SchemaTreeComponent } from '../../shared/schema-tree.component';
 
-type DataSource = { id: string; name: string; db_type: string };
-type ResponsePayload = {
-  response_type: string;
-  title?: string;
-  data: { columns?: string[]; rows?: unknown[][]; message?: string };
-};
+type DataSource = { id: string; name: string; db_type: string; dialect: string };
+type Schema = { tables: { name: string; columns: { name: string; data_type: string }[] }[] };
+type ResponsePayload = { response_type: string; title?: string; data: Record<string, unknown> };
 type AskResponse = { conversation_id: string; sql: string; response: ResponsePayload };
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, DataTableComponent],
+  imports: [
+    ReactiveFormsModule,
+    ChatSidebarComponent,
+    SchemaTreeComponent,
+    ResponseRendererComponent,
+  ],
   template: `
-    <div class="page">
-      <header>
-        <div>
-          <h1>Talk to Data</h1>
-          <p>Register a Postgres source and ask a question</p>
+    <div class="layout">
+      <app-chat-sidebar [activeId]="conversationId" (select)="onSelectConversation($event)" />
+
+      <div class="main">
+        <header>
+          <div>
+            <h1>Talk to Data</h1>
+            <p>Postgres, S3/MinIO (DuckDB), schema introspection, and dynamic responses</p>
+          </div>
+          <button type="button" (click)="logout()">Logout</button>
+        </header>
+
+        <div class="tabs">
+          <button [class.active]="sourceTab === 'postgres'" (click)="sourceTab = 'postgres'">Postgres</button>
+          <button [class.active]="sourceTab === 's3'" (click)="sourceTab = 's3'">S3 / MinIO</button>
         </div>
-        <button type="button" (click)="logout()">Logout</button>
-      </header>
 
-      <section class="card">
-        <h2>Register datasource</h2>
-        <form class="grid" [formGroup]="sourceForm" (ngSubmit)="registerSource()">
-          <input formControlName="name" placeholder="Source name" />
-          <input formControlName="host" placeholder="Host" />
-          <input formControlName="port" type="number" placeholder="Port" />
-          <input formControlName="database" placeholder="Database" />
-          <input formControlName="user" placeholder="User" />
-          <input formControlName="password" type="password" placeholder="Password" />
-          <button type="submit" class="primary">Register</button>
-        </form>
-        @if (sourceMessage) {
-          <p class="msg">{{ sourceMessage }}</p>
-        }
-      </section>
+        <section class="card">
+          <h2>Register datasource</h2>
+          @if (sourceTab === 'postgres') {
+            <form class="grid" [formGroup]="pgForm" (ngSubmit)="registerPostgres()">
+              <input formControlName="name" placeholder="Source name" />
+              <input formControlName="host" placeholder="Host" />
+              <input formControlName="port" type="number" placeholder="Port" />
+              <input formControlName="database" placeholder="Database" />
+              <input formControlName="user" placeholder="User" />
+              <input formControlName="password" type="password" placeholder="Password" />
+              <button type="submit" class="primary">Register Postgres</button>
+            </form>
+          } @else {
+            <form class="grid" [formGroup]="s3Form" (ngSubmit)="registerS3()">
+              <input formControlName="name" placeholder="Source name" />
+              <input formControlName="endpoint" placeholder="Endpoint (localhost:9000)" />
+              <input formControlName="region" placeholder="Region" />
+              <input formControlName="access_key" placeholder="Access key" />
+              <input formControlName="secret_key" type="password" placeholder="Secret key" />
+              <input formControlName="table_name" placeholder="Logical table name" />
+              <input formControlName="glob" placeholder="s3://bucket/path/*.parquet" />
+              <button type="submit" class="primary">Register S3</button>
+            </form>
+          }
+          @if (statusMessage) {
+            <p class="msg">{{ statusMessage }}</p>
+          }
+        </section>
 
-      <section class="card">
-        <h2>Ask a question</h2>
-        <form class="ask" [formGroup]="askForm" (ngSubmit)="ask()">
-          <select formControlName="datasourceId">
-            <option value="">Select datasource</option>
-            @for (ds of sources; track ds.id) {
-              <option [value]="ds.id">{{ ds.name }} ({{ ds.db_type }})</option>
+        <div class="split">
+          <section class="card">
+            <div class="row-head">
+              <h2>Schema</h2>
+              <button type="button" (click)="loadSchema()" [disabled]="!selectedSourceId">Refresh</button>
+              <button type="button" (click)="generateGlossary()" [disabled]="!selectedSourceId">
+                Generate glossary
+              </button>
+            </div>
+            <app-schema-tree [schema]="schema" />
+          </section>
+
+          <section class="card">
+            <h2>Ask a question</h2>
+            <form class="ask" [formGroup]="askForm" (ngSubmit)="ask()">
+              <select formControlName="datasourceId" (change)="onSourceChange()">
+                <option value="">Select datasource</option>
+                @for (ds of sources; track ds.id) {
+                  <option [value]="ds.id">{{ ds.name }} ({{ ds.db_type }})</option>
+                }
+              </select>
+              <input formControlName="question" placeholder="e.g. revenue by region chart" />
+              <button type="submit" class="primary" [disabled]="askForm.invalid">Ask</button>
+            </form>
+
+            @if (lastSql) {
+              <pre class="sql">{{ lastSql }}</pre>
             }
-          </select>
-          <input formControlName="question" placeholder="e.g. show all users" />
-          <button type="submit" class="primary" [disabled]="askForm.invalid">Ask</button>
-        </form>
-
-        @if (lastSql) {
-          <pre class="sql">{{ lastSql }}</pre>
-        }
-
-        @if (tableColumns.length) {
-          <app-data-table [columns]="tableColumns" [rows]="tableRows" />
-        }
-      </section>
+            <app-response-renderer [payload]="lastResponse" />
+          </section>
+        </div>
+      </div>
     </div>
   `,
   styles: [
     `
-      .page {
-        max-width: 960px;
-        margin: 0 auto;
+      .layout {
+        display: flex;
+        min-height: 100vh;
+      }
+      .main {
+        flex: 1;
         padding: 24px;
         display: grid;
         gap: 20px;
+        align-content: start;
       }
       header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 16px;
       }
       h1,
       h2 {
@@ -90,6 +129,13 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
         margin: 4px 0 0;
         opacity: 0.75;
       }
+      .tabs {
+        display: flex;
+        gap: 8px;
+      }
+      .tabs button.active {
+        background: rgba(88, 166, 255, 0.25);
+      }
       .card {
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 16px;
@@ -97,6 +143,11 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
         background: rgba(255, 255, 255, 0.03);
         display: grid;
         gap: 12px;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 16px;
       }
       .grid {
         display: grid;
@@ -107,6 +158,11 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
         display: grid;
         grid-template-columns: 1fr 2fr auto;
         gap: 10px;
+      }
+      .row-head {
+        display: flex;
+        gap: 8px;
+        align-items: center;
       }
       input,
       select,
@@ -128,12 +184,18 @@ type AskResponse = { conversation_id: string; sql: string; response: ResponsePay
         border-radius: 10px;
         background: rgba(0, 0, 0, 0.35);
         overflow: auto;
+        font-size: 12px;
       }
       .msg {
         font-size: 13px;
-        opacity: 0.85;
       }
-      @media (max-width: 720px) {
+      @media (max-width: 900px) {
+        .layout {
+          flex-direction: column;
+        }
+        .split {
+          grid-template-columns: 1fr;
+        }
         .ask {
           grid-template-columns: 1fr;
         }
@@ -148,18 +210,31 @@ export class TalkToDataComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
 
   sources: DataSource[] = [];
-  sourceMessage = '';
+  schema: Schema | null = null;
+  statusMessage = '';
   lastSql = '';
-  tableColumns: string[] = [];
-  tableRows: unknown[][] = [];
+  lastResponse: ResponsePayload | null = null;
+  conversationId: string | null = null;
+  selectedSourceId = '';
+  sourceTab: 'postgres' | 's3' = 'postgres';
 
-  readonly sourceForm = this.fb.group({
+  readonly pgForm = this.fb.group({
     name: ['Local Postgres', Validators.required],
     host: ['localhost', Validators.required],
     port: [5432, Validators.required],
     database: ['insightiq', Validators.required],
     user: ['insightiq', Validators.required],
     password: ['insightiq', Validators.required],
+  });
+
+  readonly s3Form = this.fb.group({
+    name: ['MinIO Sales', Validators.required],
+    endpoint: ['localhost:9000', Validators.required],
+    region: ['us-east-1', Validators.required],
+    access_key: ['minio', Validators.required],
+    secret_key: ['minio123456', Validators.required],
+    table_name: ['sales', Validators.required],
+    glob: ['s3://dw/sales/*.parquet', Validators.required],
   });
 
   readonly askForm = this.fb.group({
@@ -181,28 +256,66 @@ export class TalkToDataComponent implements OnInit {
     });
   }
 
-  registerSource(): void {
-    if (this.sourceForm.invalid) return;
-    const v = this.sourceForm.getRawValue();
+  registerPostgres(): void {
+    const v = this.pgForm.getRawValue();
+    this.registerSource('postgres', {
+      host: v.host,
+      port: Number(v.port),
+      database: v.database,
+      user: v.user,
+      password: v.password,
+    }, v.name!);
+  }
+
+  registerS3(): void {
+    const v = this.s3Form.getRawValue();
+    this.registerSource(
+      's3_object_store',
+      {
+        endpoint: v.endpoint,
+        region: v.region,
+        access_key: v.access_key,
+        secret_key: v.secret_key,
+        url_style: 'path',
+        table_globs: { [v.table_name!]: v.glob },
+      },
+      v.name!,
+    );
+  }
+
+  registerSource(dbType: string, connection: Record<string, unknown>, name: string): void {
     this.http
-      .post(`${API_BASE}/talk-to-data/sources`, {
-        name: v.name,
-        db_type: 'postgres',
-        connection: {
-          host: v.host,
-          port: Number(v.port),
-          database: v.database,
-          user: v.user,
-          password: v.password,
-        },
-      })
+      .post(`${API_BASE}/talk-to-data/sources`, { name, db_type: dbType, connection })
       .subscribe({
         next: () => {
-          this.sourceMessage = 'Datasource registered.';
+          this.statusMessage = 'Datasource registered.';
           this.loadSources();
         },
         error: (err) => {
-          this.sourceMessage = err?.error?.detail ?? 'Registration failed';
+          this.statusMessage = err?.error?.detail ?? 'Registration failed';
+        },
+      });
+  }
+
+  onSourceChange(): void {
+    this.selectedSourceId = this.askForm.getRawValue().datasourceId ?? '';
+    this.loadSchema();
+  }
+
+  loadSchema(): void {
+    if (!this.selectedSourceId) return;
+    this.http
+      .get<Schema>(`${API_BASE}/talk-to-data/sources/${this.selectedSourceId}/schema?refresh=true`)
+      .subscribe({ next: (schema) => (this.schema = schema) });
+  }
+
+  generateGlossary(): void {
+    if (!this.selectedSourceId) return;
+    this.http
+      .post(`${API_BASE}/talk-to-data/sources/${this.selectedSourceId}/glossary/generate`, {})
+      .subscribe({
+        next: (terms) => {
+          this.statusMessage = `Glossary generated (${(terms as unknown[]).length} terms).`;
         },
       });
   }
@@ -214,17 +327,22 @@ export class TalkToDataComponent implements OnInit {
       .post<AskResponse>(`${API_BASE}/talk-to-data/ask`, {
         datasource_id: v.datasourceId,
         question: v.question,
+        conversation_id: this.conversationId,
       })
       .subscribe({
         next: (res) => {
+          this.conversationId = res.conversation_id;
           this.lastSql = res.sql;
-          this.tableColumns = res.response.data.columns ?? [];
-          this.tableRows = res.response.data.rows ?? [];
+          this.lastResponse = res.response;
         },
         error: (err) => {
-          this.sourceMessage = err?.error?.detail ?? 'Query failed';
+          this.statusMessage = err?.error?.detail ?? 'Query failed';
         },
       });
+  }
+
+  onSelectConversation(id: string): void {
+    this.conversationId = id;
   }
 
   logout(): void {
