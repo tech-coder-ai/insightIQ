@@ -21,12 +21,22 @@ class DatabaseSettings(BaseModel):
     url: str = "postgresql+asyncpg://insightiq:insightiq@localhost:5432/insightiq"
 
 
+class QdrantSettings(BaseModel):
+    url: str = "http://localhost:6333"
+
+
+class StorageSettings(BaseModel):
+    upload_dir: str = "uploads"
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INSIGHTIQ_", env_nested_delimiter="__")
 
     env: str = "dev"
     database: DatabaseSettings = DatabaseSettings()
     jwt: JwtSettings = JwtSettings()
+    qdrant: QdrantSettings = QdrantSettings()
+    storage: StorageSettings = StorageSettings()
 
 
 class SettingsSnapshot(BaseModel):

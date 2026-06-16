@@ -7,6 +7,7 @@ from config.settings import get_settings_resolver
 from services.auth.api import router as auth_router
 from services.chat.api import router as chat_router
 from services.talk_to_data.api import router as talk_to_data_router
+from services.talk_to_docs.api import router as talk_to_docs_router
 
 
 app = FastAPI(title="InsightIQ Gateway", version="0.0.0")
@@ -29,4 +30,5 @@ async def healthz() -> dict[str, str]:
 app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(talk_to_data_router)
+app.include_router(talk_to_docs_router)
 

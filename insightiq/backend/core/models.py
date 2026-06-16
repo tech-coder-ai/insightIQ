@@ -88,3 +88,41 @@ class Conversation(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class DocumentCollection(Base):
+    __tablename__ = "document_collections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    rag_profile: Mapped[str] = mapped_column(String(64), default="naive")
+    embedding_model: Mapped[str] = mapped_column(String(128), default="hash-dev")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    content_markdown: Mapped[str] = mapped_column(Text(), default="")
+    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    chunk_index: Mapped[int] = mapped_column()
+    text: Mapped[str] = mapped_column(Text())
+    char_start: Mapped[int] = mapped_column()
+    char_end: Mapped[int] = mapped_column()
+    page_number: Mapped[int | None] = mapped_column(nullable=True)
+    qdrant_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

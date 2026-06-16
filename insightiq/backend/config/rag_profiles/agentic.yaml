@@ -1,0 +1,29 @@
+profile: agentic
+gating: true
+transform:
+  rewrite: true
+  decompose: true
+  variations: 3
+  hyde: true
+routing:
+  strategy: adaptive
+retrieval:
+  embedder: hash-dev
+  retriever: hybrid
+  top_k: 20
+fusion: rrf
+rerank:
+  reranker: cross-encoder-heuristic
+  top_k: 5
+  min_relevance_threshold: 0.6
+curation:
+  compress: true
+  token_budget: 6000
+generation:
+  llm: heuristic
+  financial_graph: true
+reflection:
+  critic: true
+  max_corrective_rounds: 2
+highlight:
+  resolve: true

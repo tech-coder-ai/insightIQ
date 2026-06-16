@@ -20,7 +20,7 @@ dist/
 .env
 *.pem
 
-# Docker volumes (if ever bind-mounted)
+**/uploads/
 **/postgres_data/
 **/qdrant_data/
 **/neo4j_data/
