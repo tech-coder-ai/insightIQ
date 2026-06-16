@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import get_settings_resolver
+from services.auth.api import router as auth_router
 
 
 app = FastAPI(title="InsightIQ Gateway", version="0.0.0")
@@ -21,4 +22,7 @@ app.add_middleware(
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+app.include_router(auth_router)
 
