@@ -53,3 +53,15 @@ class ChatMessage(Base):
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class DataSource(Base):
+    __tablename__ = "data_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+
+    name: Mapped[str] = mapped_column(String(200))
+    db_type: Mapped[str] = mapped_column(String(64))  # e.g. "postgres"
+    connection_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
