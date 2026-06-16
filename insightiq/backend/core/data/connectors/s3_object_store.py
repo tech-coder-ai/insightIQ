@@ -7,8 +7,10 @@ import duckdb
 
 from core.data.connectors.base import IDBConnector, QueryResult, ValidationResult
 from core.data.connectors.factory import CONNECTORS
+from core.data.normalize import json_safe_row
 from core.data.schema import ColumnMeta, SchemaMetadata, TableMeta
 from core.data.validators.duckdb_validator import DuckDBValidator
+from core.data.validators.readonly import check_readonly_select
 
 
 def _configure_s3(conn: duckdb.DuckDBPyConnection, connection: dict[str, Any]) -> None:
@@ -85,9 +87,12 @@ class S3ObjectStoreConnector(IDBConnector):
         return await validator.validate(sql)
 
     async def execute_query(self, sql: str) -> QueryResult:
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            raise ValueError(guard.error or "destructive SQL is not allowed")
         result = await asyncio.to_thread(self._conn.execute, sql)
         if result.description is None:
             return QueryResult(columns=[], rows=[])
         cols = [d[0] for d in result.description]
         rows = result.fetchall()
-        return QueryResult(columns=cols, rows=[list(r) for r in rows])
+        return QueryResult(columns=cols, rows=[json_safe_row(list(r)) for r in rows])

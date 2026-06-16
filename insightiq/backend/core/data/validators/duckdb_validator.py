@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-import re
-
 import duckdb
 
 from core.data.validators.base import ISQLValidator, ValidationResult
 from core.data.validators.factory import VALIDATORS
-
-DESTRUCTIVE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|MERGE|CALL|ALTER|GRANT|REVOKE|CREATE)\b",
-    re.IGNORECASE,
-)
+from core.data.validators.readonly import check_readonly_select
 
 
 @VALIDATORS.register("duckdb")
@@ -19,8 +13,9 @@ class DuckDBValidator(ISQLValidator):
         self._conn = conn
 
     async def validate(self, sql: str) -> ValidationResult:
-        if DESTRUCTIVE.search(sql):
-            return ValidationResult(ok=False, error="destructive SQL is not allowed")
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            return guard
         try:
             self._conn.execute(f"EXPLAIN {sql}")
         except Exception as e:

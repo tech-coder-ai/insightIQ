@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -15,8 +16,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
+from core.data.connectors.base import IDBConnector
 from core.data.runner import open_connector
 from core.data.schema import SchemaMetadata
+from core.data.validators.readonly import check_readonly_select
 from core.deps import get_db
 from core.llm.base import LLMMessage
 from core.llm.factory import LLMProviderFactory
@@ -27,6 +30,15 @@ from core.response.types import ResponsePayload
 from core.types import Role
 
 router = APIRouter(prefix="/talk-to-data", tags=["talk-to-data"])
+
+_MAX_SQL_RETRIES = 3
+
+_SQL_GUARDRAILS = """Security guardrails (mandatory — never violate):
+- Output ONLY one read-only SELECT query (WITH ... SELECT is allowed).
+- NEVER generate INSERT, UPDATE, DELETE, DROP, TRUNCATE, MERGE, CALL, ALTER, GRANT, REVOKE, CREATE, or REPLACE.
+- NEVER use multiple statements, semicolons, or any data-mutating operation.
+- Do not invoke procedures, COPY TO/FROM, EXEC, or DDL/DML of any kind.
+- Use only tables and columns from the schema below."""
 
 SUPPORTED_DB_TYPES = {
     "postgres",
@@ -529,15 +541,16 @@ async def ask(
     relationships = [Relationship.model_validate(r) for r in (ds.relationships_json or [])]
     glossary = [e for e in _load_glossary(ds) if e.status == "approved"]
     system_prompt = _build_sql_system_prompt(ds.dialect, schema, relationships, glossary)
-    llm = LLMProviderFactory.create("heuristic")
-    sql = (
-        await llm.complete(system=system_prompt, messages=[LLMMessage(role="user", content=req.question)])
-    ).strip().rstrip(";")
 
     async with open_connector(ds.db_type, ds.connection_config_json) as connector:
-        validation = await connector.validate_sql(sql)
-        if not validation.ok:
-            raise HTTPException(status_code=400, detail=validation.error or "invalid SQL")
+        sql, validation_error = await _generate_sql_with_retries(
+            system_prompt,
+            req.question,
+            connector,
+            max_retries=_MAX_SQL_RETRIES,
+        )
+        if validation_error:
+            raise HTTPException(status_code=400, detail=validation_error)
         result = await connector.execute_query(sql)
 
     response = classify_and_format(result, question=req.question)
@@ -559,7 +572,7 @@ async def ask(
             conversation_id=conversation_id,
             role="assistant",
             content=sql,
-            metadata_json={"response": response.model_dump()},
+            metadata_json={"response": response.model_dump(mode="json")},
         )
     )
     await db.commit()
@@ -644,8 +657,15 @@ def _build_sql_system_prompt(
 ) -> str:
     table_lines = []
     for table in schema.tables:
-        cols = ", ".join(c.name for c in table.columns)
-        table_lines.append(f"- table: {table.name} ({cols})")
+        col_parts = []
+        for c in table.columns:
+            hints = [c.data_type]
+            if c.is_primary_key:
+                hints.append("PK")
+            if c.is_indexed and not c.is_primary_key:
+                hints.append("indexed")
+            col_parts.append(f"{c.name} ({', '.join(hints)})")
+        table_lines.append(f"- table: {table.name}\n  columns: {', '.join(col_parts)}")
     rel_lines = [
         f"- {r.from_table}.{r.from_column} -> {r.to_table}.{r.to_column}"
         for r in relationships
@@ -656,12 +676,109 @@ def _build_sql_system_prompt(
         tag_suffix = f" [tags: {', '.join(g.tags)}]" if g.tags else ""
         glossary_lines.append(f"- {target}: {g.definition}{tag_suffix}")
     return (
-        f"You generate read-only {dialect} SQL.\n"
-        "Only output a single SELECT statement. No markdown.\n"
-        "Available tables:\n" + ("\n".join(table_lines) or "- table: unknown") + "\n"
-        "Relationships:\n" + ("\n".join(rel_lines) or "- none") + "\n"
+        f"You are an expert {dialect} analyst. Convert the user's question into SQL against the schema below.\n\n"
+        f"{_SQL_GUARDRAILS}\n\n"
+        "Query rules:\n"
+        "- Output ONLY the SQL text. No markdown fences, no explanation, no trailing semicolon.\n"
+        "- Prefer explicit column lists over SELECT * when aggregating or charting.\n"
+        "- Honor requested row limits (e.g. top 10 → LIMIT 10).\n"
+        "- Use JOINs when relationships are provided.\n\n"
+        "Schema:\n" + ("\n".join(table_lines) or "- table: unknown") + "\n\n"
+        "Relationships:\n" + ("\n".join(rel_lines) or "- none") + "\n\n"
         "Glossary:\n" + ("\n".join(glossary_lines) or "- none")
     )
+
+
+async def _generate_sql_with_retries(
+    system_prompt: str,
+    question: str,
+    connector: IDBConnector,
+    *,
+    max_retries: int = _MAX_SQL_RETRIES,
+) -> tuple[str, str | None]:
+    """Generate SQL via LLM, enforce read-only guardrails, validate with EXPLAIN, retry up to max_retries."""
+    messages = [LLMMessage(role="user", content=question)]
+    sql = ""
+
+    for attempt in range(max_retries):
+        sql = await _complete_sql_llm(system_prompt, messages)
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            err = guard.error or "read-only guard rejected query"
+            if attempt >= max_retries - 1:
+                return sql, err
+            messages.extend([
+                LLMMessage(role="assistant", content=sql),
+                LLMMessage(
+                    role="user",
+                    content=(
+                        f"Rejected by read-only guard: {err}. "
+                        "Output a corrected single SELECT statement only. "
+                        "No INSERT, UPDATE, DELETE, DROP, TRUNCATE, MERGE, CALL, or ALTER."
+                    ),
+                ),
+            ])
+            continue
+
+        validation = await connector.validate_sql(sql)
+        if validation.ok:
+            return sql, None
+
+        err = validation.error or "invalid SQL"
+        if attempt >= max_retries - 1:
+            return sql, err
+        messages.extend([
+            LLMMessage(role="assistant", content=sql),
+            LLMMessage(
+                role="user",
+                content=(
+                    f"Validation failed: {err}. "
+                    "Output a corrected read-only SELECT only. "
+                    "No destructive or mutating SQL."
+                ),
+            ),
+        ])
+
+    return sql, "could not generate valid read-only SQL"
+
+
+async def _complete_sql_llm(system_prompt: str, messages: list[LLMMessage]) -> str:
+    """Call OpenAI for NL→SQL; fall back to heuristic when LLM is unavailable."""
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system_prompt, messages=messages)
+        sql = _extract_sql(raw)
+        if sql:
+            return sql
+    except Exception:  # noqa: BLE001 - fall back when LLM unavailable or returns bad output
+        pass
+
+    llm = LLMProviderFactory.create("heuristic")
+    raw = await llm.complete(system=system_prompt, messages=messages)
+    return _extract_sql(raw) or raw.strip().rstrip(";")
+
+
+async def _generate_sql(system_prompt: str, question: str) -> str:
+    """Generate SQL via LLM (single attempt, no validation). Used by tests/helpers."""
+    return await _complete_sql_llm(system_prompt, [LLMMessage(role="user", content=question)])
+
+
+def _extract_sql(raw: str) -> str:
+    """Pull a single SELECT statement out of an LLM response."""
+    text = raw.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.lstrip().lower().startswith("sql"):
+                text = text.lstrip()[3:]
+    text = text.strip().rstrip(";")
+
+    # If the model added prose, keep from the first SELECT onward.
+    match = re.search(r"(?is)\bselect\b.+", text)
+    if match:
+        text = match.group(0).strip().rstrip(";")
+    return text
 
 
 async def _generate_glossary(

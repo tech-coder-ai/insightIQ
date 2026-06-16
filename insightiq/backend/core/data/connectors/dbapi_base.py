@@ -5,6 +5,7 @@ from abc import abstractmethod
 from typing import Any
 
 from core.data.connectors.base import IDBConnector, QueryResult, ValidationResult
+from core.data.normalize import json_safe_row
 from core.data.schema import SchemaMetadata
 from core.data.validators.readonly import check_readonly_select
 
@@ -62,6 +63,10 @@ class DBAPIConnector(IDBConnector):
         return check_readonly_select(sql)
 
     async def execute_query(self, sql: str) -> QueryResult:
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            raise ValueError(guard.error or "destructive SQL is not allowed")
+
         def _run() -> QueryResult:
             cur = self._get_conn().cursor()
             try:
@@ -70,7 +75,7 @@ class DBAPIConnector(IDBConnector):
                     return QueryResult(columns=[], rows=[])
                 cols = [str(d[0]) for d in cur.description]
                 rows = cur.fetchall()
-                return QueryResult(columns=cols, rows=[list(r) for r in rows])
+                return QueryResult(columns=cols, rows=[json_safe_row(list(r)) for r in rows])
             finally:
                 cur.close()
 

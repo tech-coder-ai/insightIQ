@@ -5,8 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.data.connectors.base import IDBConnector, QueryResult, ValidationResult
 from core.data.connectors.factory import CONNECTORS
+from core.data.normalize import json_safe_row
 from core.data.schema import ColumnMeta, IndexMeta, RelationshipMeta, SchemaMetadata, TableMeta
 from core.data.validators.factory import ValidatorFactory
+from core.data.validators.readonly import check_readonly_select
 
 
 @CONNECTORS.register("postgres")
@@ -145,7 +147,10 @@ class PostgresConnector(IDBConnector):
         return ValidationResult(ok=res.ok, error=res.error)
 
     async def execute_query(self, sql: str) -> QueryResult:
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            raise ValueError(guard.error or "destructive SQL is not allowed")
         result = await self._session.execute(text(sql))
         rows = result.fetchall()
         cols = list(result.keys())
-        return QueryResult(columns=cols, rows=[list(r) for r in rows])
+        return QueryResult(columns=cols, rows=[json_safe_row(list(r)) for r in rows])

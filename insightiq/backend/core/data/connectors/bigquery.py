@@ -6,6 +6,7 @@ from typing import Any
 
 from core.data.connectors.base import IDBConnector, QueryResult, ValidationResult
 from core.data.connectors.factory import CONNECTORS
+from core.data.normalize import json_safe_row
 from core.data.schema import ColumnMeta, SchemaMetadata, TableMeta
 from core.data.validators.readonly import check_readonly_select
 
@@ -95,11 +96,15 @@ class BigQueryConnector(IDBConnector):
         return await asyncio.to_thread(_dry_run)
 
     async def execute_query(self, sql: str) -> QueryResult:
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            raise ValueError(guard.error or "destructive SQL is not allowed")
+
         def _run() -> QueryResult:
             client = self._get_client()
             result = client.query(sql).result()
             cols = [field.name for field in result.schema]
             rows = [[row[c] for c in cols] for row in result]
-            return QueryResult(columns=cols, rows=rows)
+            return QueryResult(columns=cols, rows=[json_safe_row(row) for row in rows])
 
         return await asyncio.to_thread(_run)

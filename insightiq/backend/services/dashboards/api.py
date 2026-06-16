@@ -194,12 +194,22 @@ async def pin_card(
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
     await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
+
+    layout_json = dict(req.layout_json)
+    if layout_json.get("x", 0) == 0 and layout_json.get("y", 0) == 0:
+        cards_res = await db.execute(select(DashboardCard).where(DashboardCard.dashboard_id == dashboard_id))
+        y_offset = 0
+        for existing in cards_res.scalars().all():
+            layout = existing.layout_json or {}
+            y_offset = max(y_offset, int(layout.get("y", 0)) + int(layout.get("rows", 3)))
+        layout_json["y"] = y_offset
+
     card = DashboardCard(
         dashboard_id=dashboard_id,
         tenant_id=ctx.tenant_id,
         title=req.title,
         card_type=req.card_type,
-        layout_json=req.layout_json,
+        layout_json=layout_json,
         refresh_mode=req.refresh_mode,
         source_type=req.source_type,
         source_config_json=req.source_config,

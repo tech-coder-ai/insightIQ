@@ -1,6 +1,6 @@
 import pytest
 
-from core.data.validators.duckdb_validator import DESTRUCTIVE
+from core.data.validators.readonly import DESTRUCTIVE
 from core.response.classifier import classify_and_format
 from core.data.connectors.base import QueryResult
 
