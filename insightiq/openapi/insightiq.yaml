@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: InsightIQ API
-  version: 0.0.0
+  version: 0.1.0
 servers:
   - url: http://localhost:8000
 paths:
@@ -18,3 +18,206 @@ paths:
                 properties:
                   status: { type: string }
                 required: [status]
+
+  /auth/register:
+    post:
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /chat/messages:
+    get:
+      operationId: listMessages
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: conversation_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageResponse"
+    post:
+      operationId: createMessage
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateMessageResponse"
+
+  /talk-to-data/sources:
+    get:
+      operationId: listDataSources
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Data sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DataSourceResponse"
+    post:
+      operationId: registerDataSource
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDataSourceRequest"
+      responses:
+        "200":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataSourceResponse"
+
+  /talk-to-data/ask:
+    post:
+      operationId: askData
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AskRequest"
+      responses:
+        "200":
+          description: Query result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AskResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [tenant_name, email, password]
+      properties:
+        tenant_name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    AuthResponse:
+      type: object
+      required: [access_token, token_type]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string }
+    CreateMessageRequest:
+      type: object
+      required: [conversation_id, role, content]
+      properties:
+        conversation_id: { type: string, format: uuid }
+        role: { type: string }
+        content: { type: string }
+        metadata_json: { type: object }
+    CreateMessageResponse:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+    MessageResponse:
+      type: object
+      required: [id, conversation_id, role, content, metadata_json, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        role: { type: string }
+        content: { type: string }
+        metadata_json: { type: object }
+        created_at: { type: string, format: date-time }
+    RegisterDataSourceRequest:
+      type: object
+      required: [name, db_type, connection]
+      properties:
+        name: { type: string }
+        db_type: { type: string }
+        connection:
+          type: object
+          properties:
+            host: { type: string }
+            port: { type: integer }
+            database: { type: string }
+            user: { type: string }
+            password: { type: string }
+    DataSourceResponse:
+      type: object
+      required: [id, name, db_type]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        db_type: { type: string }
+    AskRequest:
+      type: object
+      required: [datasource_id, question]
+      properties:
+        datasource_id: { type: string, format: uuid }
+        question: { type: string }
+        conversation_id: { type: string, format: uuid }
+    AskResponse:
+      type: object
+      required: [conversation_id, sql, response]
+      properties:
+        conversation_id: { type: string, format: uuid }
+        sql: { type: string }
+        response: { type: object }

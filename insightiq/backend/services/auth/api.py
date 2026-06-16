@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
-from core.db import create_engine, create_sessionmaker
+from core.deps import get_db
 from core.models import Tenant, User
 from core.security import encode_access_token, hash_password, verify_password
 from core.types import Role
@@ -31,19 +31,6 @@ class LoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
-
-def get_sessionmaker() -> object:
-    # Phase 1: keep wiring minimal; Phase 2 will centralize DI.
-    settings = get_settings_resolver().resolve()
-    engine = create_engine(settings)
-    return create_sessionmaker(engine)
-
-
-async def get_db() -> AsyncSession:
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as session:  # type: ignore[misc]
-        yield session
 
 
 @router.post("/register", response_model=AuthResponse)
