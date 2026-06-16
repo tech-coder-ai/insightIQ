@@ -29,6 +29,24 @@ class StorageSettings(BaseModel):
     upload_dir: str = "uploads"
 
 
+class RedisSettings(BaseModel):
+    url: str = "redis://localhost:6379/0"
+    events_stream: str = "insightiq:events"
+
+
+class TelemetrySettings(BaseModel):
+    service_name: str = "insightiq-gateway"
+    otlp_endpoint: str = "http://localhost:4317"
+    enabled: bool = True
+    log_json: bool = True
+
+
+class RateLimitSettings(BaseModel):
+    enabled: bool = True
+    requests_per_minute: int = 120
+    burst: int = 30
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INSIGHTIQ_", env_nested_delimiter="__")
 
@@ -37,6 +55,9 @@ class AppSettings(BaseSettings):
     jwt: JwtSettings = JwtSettings()
     qdrant: QdrantSettings = QdrantSettings()
     storage: StorageSettings = StorageSettings()
+    redis: RedisSettings = RedisSettings()
+    telemetry: TelemetrySettings = TelemetrySettings()
+    rate_limit: RateLimitSettings = RateLimitSettings()
 
 
 class SettingsSnapshot(BaseModel):

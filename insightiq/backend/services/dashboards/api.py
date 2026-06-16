@@ -5,15 +5,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.audit.service import record_audit
 from core.dashboard.factory import CardRefresherFactory
 from core.deps import get_db
 from core.models import Dashboard, DashboardCard, DashboardShare
 from core.request_context import RequestContext, require_auth, require_role
+from core.tenancy import user_can_access_dashboard, user_can_edit_dashboard
 from core.types import Role
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
@@ -68,6 +70,10 @@ class UpdateFiltersRequest(BaseModel):
     global_filters_json: dict[str, Any]
 
 
+class UpdateTeamAccessRequest(BaseModel):
+    team_access_json: list[dict[str, str]]
+
+
 class ShareResponse(BaseModel):
     token: str
     url_path: str
@@ -76,11 +82,22 @@ class ShareResponse(BaseModel):
 @router.post("", response_model=DashboardResponse)
 async def create_dashboard(
     req: CreateDashboardRequest,
+    request: Request,
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardResponse:
     dash = Dashboard(tenant_id=ctx.tenant_id, owner_user_id=ctx.user_id, name=req.name)
     db.add(dash)
+    await db.flush()
+    await record_audit(
+        db,
+        action="create",
+        resource_type="dashboard",
+        resource_id=str(dash.id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     await db.refresh(dash)
     return DashboardResponse(
@@ -94,11 +111,12 @@ async def list_dashboards(
     db: AsyncSession = Depends(get_db),
 ) -> list[DashboardResponse]:
     res = await db.execute(select(Dashboard).where(Dashboard.tenant_id == ctx.tenant_id))
+    dashboards = [d for d in res.scalars().all() if user_can_access_dashboard(d, ctx)]
     return [
         DashboardResponse(
             id=d.id, name=d.name, global_filters_json=d.global_filters_json, team_access_json=list(d.team_access_json)
         )
-        for d in res.scalars().all()
+        for d in dashboards
     ]
 
 
@@ -108,7 +126,7 @@ async def get_dashboard(
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardDetailResponse:
-    dash = await _get_dashboard(db, ctx.tenant_id, dashboard_id)
+    dash = await _get_dashboard(db, ctx, dashboard_id)
     cards_res = await db.execute(select(DashboardCard).where(DashboardCard.dashboard_id == dash.id))
     cards = [_card_response(c) for c in cards_res.scalars().all()]
     return DashboardDetailResponse(
@@ -120,11 +138,47 @@ async def get_dashboard(
 async def update_filters(
     dashboard_id: uuid.UUID,
     req: UpdateFiltersRequest,
+    request: Request,
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardResponse:
-    dash = await _get_dashboard(db, ctx.tenant_id, dashboard_id)
+    dash = await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
     dash.global_filters_json = req.global_filters_json
+    await record_audit(
+        db,
+        action="update_filters",
+        resource_type="dashboard",
+        resource_id=str(dash.id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        ip_address=request.client.host if request.client else None,
+    )
+    await db.commit()
+    return DashboardResponse(
+        id=dash.id, name=dash.name, global_filters_json=dash.global_filters_json, team_access_json=list(dash.team_access_json)
+    )
+
+
+@router.patch("/{dashboard_id}/team-access", response_model=DashboardResponse)
+async def update_team_access(
+    dashboard_id: uuid.UUID,
+    req: UpdateTeamAccessRequest,
+    request: Request,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> DashboardResponse:
+    dash = await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
+    dash.team_access_json = req.team_access_json
+    await record_audit(
+        db,
+        action="update_team_access",
+        resource_type="dashboard",
+        resource_id=str(dash.id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        metadata={"team_size": len(req.team_access_json)},
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     return DashboardResponse(
         id=dash.id, name=dash.name, global_filters_json=dash.global_filters_json, team_access_json=list(dash.team_access_json)
@@ -135,10 +189,11 @@ async def update_filters(
 async def pin_card(
     dashboard_id: uuid.UUID,
     req: PinCardRequest,
+    request: Request,
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
-    await _get_dashboard(db, ctx.tenant_id, dashboard_id)
+    await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
     card = DashboardCard(
         dashboard_id=dashboard_id,
         tenant_id=ctx.tenant_id,
@@ -152,6 +207,17 @@ async def pin_card(
         auto_refresh_seconds=req.auto_refresh_seconds,
     )
     db.add(card)
+    await db.flush()
+    await record_audit(
+        db,
+        action="pin_card",
+        resource_type="dashboard_card",
+        resource_id=str(card.id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        metadata={"dashboard_id": str(dashboard_id)},
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     await db.refresh(card)
     return _card_response(card)
@@ -165,7 +231,7 @@ async def update_card_layout(
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
-    card = await _get_card(db, ctx.tenant_id, dashboard_id, card_id)
+    card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=True)
     card.layout_json = req.layout_json
     await db.commit()
     await db.refresh(card)
@@ -179,8 +245,7 @@ async def refresh_card(
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
-    card = await _get_card(db, ctx.tenant_id, dashboard_id, card_id)
-    if card.refresh_mode == "snapshot":
+    card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=False)
         return _card_response(card)
 
     refresher = CardRefresherFactory.create(card.source_type)
@@ -194,10 +259,11 @@ async def refresh_card(
 @router.post("/{dashboard_id}/share", response_model=ShareResponse)
 async def share_dashboard(
     dashboard_id: uuid.UUID,
+    request: Request,
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> ShareResponse:
-    dash = await _get_dashboard(db, ctx.tenant_id, dashboard_id)
+    dash = await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
     token = secrets.token_urlsafe(24)
     share = DashboardShare(
         dashboard_id=dash.id,
@@ -207,6 +273,16 @@ async def share_dashboard(
         expires_at=datetime.now(UTC) + timedelta(days=30),
     )
     db.add(share)
+    await db.flush()
+    await record_audit(
+        db,
+        action="share",
+        resource_type="dashboard",
+        resource_id=str(dash.id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        ip_address=request.client.host if request.client else None,
+    )
     await db.commit()
     return ShareResponse(token=token, url_path=f"/d/{token}")
 
@@ -231,24 +307,40 @@ async def public_dashboard(token: str, db: AsyncSession = Depends(get_db)) -> Da
     )
 
 
-async def _get_dashboard(db: AsyncSession, tenant_id: uuid.UUID, dashboard_id: uuid.UUID) -> Dashboard:
+async def _get_dashboard(
+    db: AsyncSession,
+    ctx: RequestContext,
+    dashboard_id: uuid.UUID,
+    *,
+    require_edit: bool = False,
+) -> Dashboard:
     res = await db.execute(
-        select(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.tenant_id == tenant_id)
+        select(Dashboard).where(Dashboard.id == dashboard_id, Dashboard.tenant_id == ctx.tenant_id)
     )
     dash = res.scalar_one_or_none()
     if dash is None:
         raise HTTPException(status_code=404, detail="dashboard not found")
+    if require_edit and not user_can_edit_dashboard(dash, ctx):
+        raise HTTPException(status_code=403, detail="dashboard edit forbidden")
+    if not require_edit and not user_can_access_dashboard(dash, ctx):
+        raise HTTPException(status_code=403, detail="dashboard access forbidden")
     return dash
 
 
 async def _get_card(
-    db: AsyncSession, tenant_id: uuid.UUID, dashboard_id: uuid.UUID, card_id: uuid.UUID
+    db: AsyncSession,
+    ctx: RequestContext,
+    dashboard_id: uuid.UUID,
+    card_id: uuid.UUID,
+    *,
+    require_edit: bool = False,
 ) -> DashboardCard:
+    dash = await _get_dashboard(db, ctx, dashboard_id, require_edit=require_edit)
     res = await db.execute(
         select(DashboardCard).where(
             DashboardCard.id == card_id,
-            DashboardCard.dashboard_id == dashboard_id,
-            DashboardCard.tenant_id == tenant_id,
+            DashboardCard.dashboard_id == dash.id,
+            DashboardCard.tenant_id == ctx.tenant_id,
         )
     )
     card = res.scalar_one_or_none()
