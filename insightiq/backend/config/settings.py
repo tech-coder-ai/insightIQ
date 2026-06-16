@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 class JwtSettings(BaseModel):
@@ -101,6 +103,23 @@ class SettingsResolver:
         if request_overrides:
             # Minimal override support for Phase 1; keep shape stable for later layering.
             settings = settings.model_copy(update=request_overrides)
+        # Dev ergonomics: if running in dev without explicit RS256 keys, generate ephemeral keys
+        # so local registration/login works without exporting PEMs.
+        if settings.env == "dev" and (not settings.jwt.private_key_pem or not settings.jwt.public_key_pem):
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            settings.jwt.private_key_pem = key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            ).decode()
+            settings.jwt.public_key_pem = (
+                key.public_key()
+                .public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+                .decode()
+            )
         return settings
 
 
