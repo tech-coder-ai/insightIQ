@@ -3,22 +3,19 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
 
 from config.settings import AppSettings
 from core.types import Role
 
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
 def encode_access_token(
@@ -65,4 +62,3 @@ def decode_access_token(*, settings: AppSettings, token: str) -> TokenClaims:
         tenant_id=uuid.UUID(payload["tid"]),
         role=Role(payload["role"]),
     )
-

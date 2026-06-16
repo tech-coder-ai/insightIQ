@@ -16,16 +16,21 @@ class QdrantStore:
         settings = get_settings_resolver().resolve()
         self._client = QdrantClient(url=settings.qdrant.url)
 
+    def delete_collection(self, name: str) -> None:
+        if self._client.collection_exists(name):
+            self._client.delete_collection(collection_name=name)
+
     def ensure_collection(self, name: str, *, dimension: int, embedding_model: str) -> None:
         if self._client.collection_exists(name):
-            info = self._client.get_collection(name)
-            existing = info.config.params.vectors  # type: ignore[union-attr]
-            if isinstance(existing, dict):
-                return
-        self._client.create_collection(
-            collection_name=name,
-            vectors_config=qmodels.VectorParams(size=dimension, distance=qmodels.Distance.COSINE),
-        )
+            return
+        try:
+            self._client.create_collection(
+                collection_name=name,
+                vectors_config=qmodels.VectorParams(size=dimension, distance=qmodels.Distance.COSINE),
+            )
+        except Exception:  # noqa: BLE001 - tolerate a concurrent create (409 already exists)
+            if not self._client.collection_exists(name):
+                raise
 
     async def upsert_chunks(
         self,
@@ -73,16 +78,19 @@ class QdrantStore:
     ) -> list[RetrievedChunk]:
         embedder = EmbedderFactory.create(embedder_key)
         vector = (await embedder.embed_texts([query]))[0]
-        results = self._client.search(
+        if not self._client.collection_exists(collection_name):
+            return []
+        response = self._client.query_points(
             collection_name=collection_name,
-            query_vector=vector,
+            query=vector,
             limit=top_k,
+            with_payload=True,
             query_filter=qmodels.Filter(
                 must=[qmodels.FieldCondition(key="tenant_id", match=qmodels.MatchValue(value=tenant_id))]
             ),
         )
         chunks: list[RetrievedChunk] = []
-        for hit in results:
+        for hit in response.points:
             p = hit.payload or {}
             chunks.append(
                 RetrievedChunk(

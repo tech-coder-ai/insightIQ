@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
 from config.settings import get_settings_resolver
+from core.dev_auth import ensure_dev_identity
 from core.jobs.report_scheduler import start_report_scheduler, stop_report_scheduler
 from core.telemetry.logging import configure_logging
 from core.telemetry.otel import setup_otel
@@ -29,6 +30,7 @@ settings = get_settings_resolver().resolve()
 async def lifespan(app: FastAPI):
     configure_logging(json_logs=settings.telemetry.log_json)
     setup_otel(app, settings)
+    await ensure_dev_identity()
     start_report_scheduler()
     yield
     stop_report_scheduler()

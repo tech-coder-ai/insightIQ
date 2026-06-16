@@ -49,41 +49,44 @@ type Conversation = {
   styles: [
     `
       .sidebar {
-        border-right: 1px solid rgba(255, 255, 255, 0.08);
-        padding: 16px;
+        border-right: 1px solid var(--border);
+        padding: var(--space-4);
         min-width: 240px;
         max-width: 280px;
       }
       h2 {
         margin: 0 0 8px;
-        font-size: 14px;
+        font-size: var(--text-base);
       }
       input {
         width: 100%;
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(0, 0, 0, 0.25);
-        color: inherit;
+        padding: 9px 11px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-strong);
+        background: var(--input-bg);
+        color: var(--text);
         margin-bottom: 12px;
+        font-family: inherit;
       }
+      input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
       ul {
         list-style: none;
         margin: 0;
         padding: 0;
         display: grid;
-        gap: 6px;
+        gap: 4px;
       }
       li {
         padding: 10px;
-        border-radius: 10px;
+        border-radius: var(--radius-md);
         cursor: pointer;
         border: 1px solid transparent;
+        transition: background var(--dur-fast) var(--ease);
       }
-      li:hover,
+      li:hover { background: var(--surface-2); }
       li.active {
-        background: rgba(255, 255, 255, 0.05);
-        border-color: rgba(255, 255, 255, 0.08);
+        background: var(--primary-soft);
+        border-color: var(--primary);
       }
       .row {
         display: flex;
@@ -91,18 +94,18 @@ type Conversation = {
         gap: 8px;
       }
       .title {
-        font-size: 13px;
+        font-size: var(--text-sm);
         font-weight: 500;
       }
       .meta {
-        font-size: 11px;
-        opacity: 0.6;
+        font-size: var(--text-xs);
+        color: var(--text-muted);
         margin-top: 4px;
       }
       button {
         background: none;
         border: none;
-        color: inherit;
+        color: var(--text-2);
         cursor: pointer;
       }
       .export-row {
@@ -113,10 +116,11 @@ type Conversation = {
       .export-row button {
         flex: 1;
         padding: 6px 8px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        font-size: 11px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-strong);
+        font-size: var(--text-xs);
       }
+      .export-row button:hover { background: var(--surface-2); color: var(--text); }
     `,
   ],
 })

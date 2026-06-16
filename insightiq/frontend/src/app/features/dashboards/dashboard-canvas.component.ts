@@ -1,14 +1,13 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { GridsterConfig, GridsterItem, GridsterModule } from 'angular-gridster2';
 import { Subscription, interval } from 'rxjs';
 
 import { DashboardCard, DashboardDetail, DashboardService } from '../../core/dashboard.service';
 import { ExportService } from '../../core/export.service';
 import { ReportService } from '../../core/report.service';
-import { AuthService } from '../../core/auth.service';
 import { DashboardCardComponent } from '../../shared/dashboard-card.component';
 
 @Component({
@@ -24,24 +23,23 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
     <div class="page">
       <header>
         <div>
-          <a routerLink="/dashboards">← Dashboards</a>
+          <a routerLink="/dashboards" class="back">← Dashboards</a>
           <h1>{{ dashboard?.name }}</h1>
         </div>
         <div class="actions">
-          <button type="button" (click)="refreshLiveCards()">Refresh live</button>
-          <button type="button" (click)="exportDashboard('pdf')">Export PDF</button>
-          <button type="button" (click)="exportDashboard('pptx')">Export PPT</button>
-          <button type="button" (click)="scheduleReport()">Schedule email</button>
-          <button type="button" (click)="share()">Share</button>
-          <button type="button" (click)="logout()">Logout</button>
+          <button type="button" class="btn btn-secondary btn-sm" (click)="refreshLiveCards()">Refresh live</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="exportDashboard('pdf')">Export PDF</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="exportDashboard('pptx')">Export PPT</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="scheduleReport()">Schedule email</button>
+          <button type="button" class="btn btn-primary btn-sm" (click)="share()">Share</button>
         </div>
       </header>
 
       <form class="filters" [formGroup]="filterForm" (ngSubmit)="applyFilters()">
-        <input formControlName="region" placeholder="Filter: region" />
-        <input formControlName="date_from" type="date" />
-        <input formControlName="date_to" type="date" />
-        <button type="submit">Apply filters</button>
+        <input class="input" formControlName="region" placeholder="Filter: region" />
+        <input class="input" formControlName="date_from" type="date" />
+        <input class="input" formControlName="date_to" type="date" />
+        <button type="submit" class="btn btn-secondary">Apply filters</button>
       </form>
 
       @if (shareUrl) {
@@ -64,62 +62,68 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
   styles: [
     `
       .page {
-        padding: 20px;
-        min-height: 100vh;
+        min-height: 100%;
       }
       header {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
-        margin-bottom: 16px;
+        gap: var(--space-4);
+        margin-bottom: var(--space-5);
+        flex-wrap: wrap;
       }
       h1 {
-        margin: 8px 0 0;
+        margin: 6px 0 0;
+        font-size: var(--text-xl);
       }
+      .back {
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: var(--text-sm);
+      }
+      .back:hover { color: var(--primary-text); }
       .actions {
         display: flex;
         gap: 8px;
+        flex-wrap: wrap;
       }
       .filters {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         flex-wrap: wrap;
-        margin-bottom: 16px;
+        margin-bottom: var(--space-5);
       }
-      input,
-      button {
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(0, 0, 0, 0.25);
-        color: inherit;
-      }
+      .filters .input { width: auto; min-width: 160px; }
       gridster {
-        background: rgba(255, 255, 255, 0.02);
-        border-radius: 12px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
       }
       gridster-item {
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 12px;
+        background: transparent;
+        border: none;
+        border-radius: var(--radius-md);
+        overflow: hidden;
+      }
+      .share {
+        font-size: var(--text-sm);
+        color: var(--text-2);
       }
       .share code {
-        color: #8ec5ff;
-      }
-      a {
-        color: #8ec5ff;
-        text-decoration: none;
+        color: var(--primary-text);
+        background: var(--surface-2);
+        padding: 2px 8px;
+        border-radius: var(--radius-sm);
+        font-family: var(--font-mono);
       }
     `,
   ],
 })
 export class DashboardCanvasComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
   private readonly dashboards = inject(DashboardService);
   private readonly exportService = inject(ExportService);
   private readonly reports = inject(ReportService);
-  private readonly auth = inject(AuthService);
   private readonly fb = inject(FormBuilder);
 
   dashboard: DashboardDetail | null = null;
@@ -147,10 +151,6 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
   });
 
   ngOnInit(): void {
-    if (!this.auth.isAuthenticated()) {
-      this.router.navigate(['/login']);
-      return;
-    }
     this.dashboardId = this.route.snapshot.paramMap.get('id') ?? '';
     this.load();
   }
@@ -232,10 +232,5 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
       .subscribe({
         next: () => window.alert('Report scheduled (hourly). Check backend logs for dev email delivery.'),
       });
-  }
-
-  logout(): void {
-    this.auth.logout();
-    this.router.navigate(['/login']);
   }
 }

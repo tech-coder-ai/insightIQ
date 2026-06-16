@@ -11,7 +11,9 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
   template: `
     <div class="page">
       <header>
-        <h1>{{ dashboard?.name }} <span class="badge">read-only</span></h1>
+        <span class="brand-mark">IQ</span>
+        <h1>{{ dashboard?.name }}</h1>
+        <span class="badge">Read-only</span>
       </header>
 
       <gridster [options]="options">
@@ -30,17 +32,40 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
   styles: [
     `
       .page {
-        padding: 20px;
+        padding: var(--space-8);
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: var(--space-6);
+      }
+      h1 { font-size: var(--text-xl); }
+      .brand-mark {
+        width: 32px; height: 32px; border-radius: 9px;
+        display: grid; place-items: center;
+        background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+        color: #fff; font-weight: 700; font-size: 13px;
       }
       .badge {
-        font-size: 12px;
-        opacity: 0.6;
-        font-weight: normal;
+        font-size: var(--text-xs);
+        padding: 3px 10px;
+        border-radius: var(--radius-pill);
+        background: var(--surface-3);
+        color: var(--text-2);
+      }
+      gridster {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
       }
       gridster-item {
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 12px;
+        background: transparent;
+        border: none;
+        border-radius: var(--radius-md);
+        overflow: hidden;
       }
     `,
   ],

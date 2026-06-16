@@ -17,10 +17,11 @@ from core.rag.nodes import (
     node_understand,
 )
 from core.rag.profiles import RagProfileConfig
+from core.rag.state import RagGraphState
 
 
 def build_graph(cfg: RagProfileConfig):
-    graph = StateGraph(dict)
+    graph = StateGraph(RagGraphState)
 
     async def understand(s: dict[str, Any]) -> dict[str, Any]:
         return await node_understand(s, cfg)

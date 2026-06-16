@@ -1,21 +1,19 @@
 import { JsonPipe, SlicePipe } from '@angular/common';
 import { Component, OnInit, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
 
-import { AuthService } from '../../core/auth.service';
 import { DashboardService } from '../../core/dashboard.service';
 import { PromptRun, PromptStudioService, PromptTemplate } from '../../core/prompt-studio.service';
 import { ResponseRendererComponent } from '../../shared/response-renderer.component';
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, RouterLink, ResponseRendererComponent, JsonPipe, SlicePipe],
+  imports: [ReactiveFormsModule, ResponseRendererComponent, JsonPipe, SlicePipe],
   template: `
     <div class="page">
       <header>
         <h1>Prompt Studio</h1>
-        <a routerLink="/">Home</a>
+        <p class="subtitle">Build, version and evaluate prompt templates</p>
       </header>
 
       <div class="layout">
@@ -102,61 +100,104 @@ import { ResponseRendererComponent } from '../../shared/response-renderer.compon
   styles: [
     `
       .page {
-        padding: 24px;
-        max-width: 1100px;
+        max-width: 1140px;
         margin: 0 auto;
       }
       header {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: var(--space-6);
       }
+      h1 { margin: 0; font-size: var(--text-xl); }
+      h2 { font-size: var(--text-lg); }
+      h3 { font-size: var(--text-base); color: var(--text-2); }
+      .subtitle { margin: 0; color: var(--text-2); font-size: var(--text-base); }
       .layout {
         display: grid;
-        grid-template-columns: 280px 1fr;
-        gap: 24px;
-        margin-top: 20px;
+        grid-template-columns: 290px 1fr;
+        gap: var(--space-6);
+      }
+      aside {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-5);
+        box-shadow: var(--shadow-sm);
+        height: fit-content;
       }
       aside ul {
         list-style: none;
         padding: 0;
         display: grid;
         gap: 4px;
+        margin: 0 0 var(--space-5);
       }
-      aside button {
+      aside ul button {
         width: 100%;
         text-align: left;
-        padding: 8px 10px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 9px 11px;
+        border-radius: var(--radius-md);
+        border: 1px solid transparent;
         background: transparent;
         color: inherit;
         cursor: pointer;
+        font-family: inherit;
+        font-size: var(--text-base);
+        margin-bottom: 0;
+        transition: background var(--dur-fast) var(--ease);
       }
-      aside button.active {
-        background: rgba(88, 166, 255, 0.2);
+      aside ul button:hover { background: var(--surface-2); }
+      aside ul button.active {
+        background: var(--primary-soft);
+        color: var(--primary-text);
+        border-color: var(--primary);
       }
       .badge {
-        font-size: 10px;
+        font-size: var(--text-xs);
         margin-left: 6px;
-        opacity: 0.7;
+        padding: 2px 7px;
+        border-radius: var(--radius-pill);
+        background: var(--primary-soft);
+        color: var(--primary-text);
+      }
+      main {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: var(--space-6);
+        box-shadow: var(--shadow-sm);
       }
       input,
       textarea,
       select,
       button {
         width: 100%;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(0, 0, 0, 0.25);
-        color: inherit;
+        padding: 9px 12px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border-strong);
+        background: var(--input-bg);
+        color: var(--text);
         margin-bottom: 8px;
         box-sizing: border-box;
+        font-family: inherit;
+        font-size: var(--text-base);
+      }
+      textarea { font-family: var(--font-mono); font-size: var(--text-sm); resize: vertical; }
+      input:focus, textarea:focus, select:focus {
+        outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft);
+      }
+      button {
+        cursor: pointer;
+        font-weight: 550;
+        transition: background var(--dur-fast) var(--ease);
       }
       .primary {
-        background: rgba(88, 166, 255, 0.25);
+        background: var(--primary);
+        color: var(--on-primary);
+        border-color: transparent;
       }
+      .primary:hover { background: var(--primary-hover); }
       .actions {
         display: flex;
         gap: 8px;
@@ -168,19 +209,24 @@ import { ResponseRendererComponent } from '../../shared/response-renderer.compon
         flex: 1;
         min-width: 120px;
       }
-      .muted {
-        opacity: 0.7;
+      .muted { color: var(--text-muted); }
+      .output {
+        margin-top: var(--space-5);
+        padding-top: var(--space-5);
+        border-top: 1px solid var(--border);
       }
       .scores {
         display: flex;
-        gap: 16px;
-        margin-top: 12px;
-        font-size: 13px;
+        gap: var(--space-4);
+        margin-top: var(--space-3);
+        font-size: var(--text-sm);
+        color: var(--text-2);
       }
       .run-item {
-        padding: 10px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 11px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
         margin-bottom: 8px;
         display: flex;
         justify-content: space-between;
@@ -188,16 +234,17 @@ import { ResponseRendererComponent } from '../../shared/response-renderer.compon
       }
       pre {
         white-space: pre-wrap;
-        font-size: 12px;
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        margin: 0;
       }
+      details summary { cursor: pointer; color: var(--text-2); font-size: var(--text-sm); }
     `,
   ],
 })
 export class PromptStudioComponent implements OnInit {
   private readonly promptService = inject(PromptStudioService);
   private readonly dashboardService = inject(DashboardService);
-  private readonly auth = inject(AuthService);
-  private readonly router = inject(Router);
   private readonly fb = inject(FormBuilder);
 
   templates: PromptTemplate[] = [];
@@ -217,10 +264,6 @@ export class PromptStudioComponent implements OnInit {
   });
 
   ngOnInit(): void {
-    if (!this.auth.isAuthenticated()) {
-      this.router.navigate(['/login']);
-      return;
-    }
     this.loadTemplates();
     this.dashboardService.list().subscribe({ next: (d) => (this.dashboards = d) });
   }

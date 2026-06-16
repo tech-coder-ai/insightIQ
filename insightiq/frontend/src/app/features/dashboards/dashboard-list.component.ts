@@ -3,27 +3,39 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 
 import { DashboardService } from '../../core/dashboard.service';
-import { AuthService } from '../../core/auth.service';
 
 @Component({
   standalone: true,
   imports: [ReactiveFormsModule, RouterLink],
   template: `
     <div class="page">
-      <header>
-        <h1>Dashboards</h1>
-        <a routerLink="/">Home</a>
-      </header>
+      <div class="page-header">
+        <div>
+          <h1>Dashboards</h1>
+          <p>Pin query results and prompt outputs into live, shareable boards.</p>
+        </div>
+      </div>
 
       <form class="create" [formGroup]="form" (ngSubmit)="create()">
-        <input formControlName="name" placeholder="New dashboard name" />
-        <button type="submit" class="primary">Create</button>
+        <input class="input" formControlName="name" placeholder="New dashboard name" />
+        <button type="submit" class="btn btn-primary">Create</button>
       </form>
+
+      @if (dashboards.length === 0) {
+        <div class="empty-state">
+          <div class="icon">📐</div>
+          <p>No dashboards yet. Create one above, or pin a result from Talk to Data.</p>
+        </div>
+      }
 
       <ul>
         @for (d of dashboards; track d.id) {
           <li>
-            <a [routerLink]="['/dashboards', d.id]">{{ d.name }}</a>
+            <a [routerLink]="['/dashboards', d.id]">
+              <span class="d-icon">📊</span>
+              <span class="d-name">{{ d.name }}</span>
+              <span class="d-arrow">→</span>
+            </a>
           </li>
         }
       </ul>
@@ -31,52 +43,42 @@ import { AuthService } from '../../core/auth.service';
   `,
   styles: [
     `
-      .page {
-        padding: 24px;
-        max-width: 720px;
-        margin: 0 auto;
-      }
-      header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
+      .page { max-width: 760px; }
       .create {
         display: flex;
-        gap: 8px;
-        margin: 20px 0;
+        gap: 10px;
+        margin-bottom: var(--space-6);
       }
-      input,
-      button {
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(0, 0, 0, 0.25);
-        color: inherit;
-      }
-      .primary {
-        background: rgba(88, 166, 255, 0.25);
-      }
+      .create .input { flex: 1; }
       ul {
         list-style: none;
         padding: 0;
+        margin: 0;
         display: grid;
-        gap: 8px;
+        gap: 10px;
       }
       li a {
-        display: block;
-        padding: 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        color: #8ec5ff;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
         text-decoration: none;
+        box-shadow: var(--shadow-sm);
+        transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
       }
+      li a:hover { border-color: var(--primary); transform: translateX(2px); }
+      .d-icon { font-size: 18px; }
+      .d-name { flex: 1; font-weight: 550; }
+      .d-arrow { color: var(--text-muted); }
     `,
   ],
 })
 export class DashboardListComponent implements OnInit {
   private readonly dashboardService = inject(DashboardService);
-  private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly fb = inject(FormBuilder);
 
@@ -84,10 +86,6 @@ export class DashboardListComponent implements OnInit {
   readonly form = this.fb.group({ name: ['My Dashboard', Validators.required] });
 
   ngOnInit(): void {
-    if (!this.auth.isAuthenticated()) {
-      this.router.navigate(['/login']);
-      return;
-    }
     this.load();
   }
 

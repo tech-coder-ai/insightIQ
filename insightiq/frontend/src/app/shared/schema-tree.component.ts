@@ -30,17 +30,20 @@ type Schema = { tables: Table[] };
   styles: [
     `
       .tree {
-        font-size: 13px;
+        font-size: var(--text-sm);
       }
       details {
-        margin-bottom: 8px;
+        margin-bottom: 6px;
       }
       summary {
         cursor: pointer;
         font-weight: 600;
+        padding: 4px 0;
+        color: var(--text);
       }
+      summary:hover { color: var(--primary-text); }
       ul {
-        margin: 6px 0 0;
+        margin: 4px 0 0;
         padding-left: 16px;
         list-style: none;
       }
@@ -48,15 +51,18 @@ type Schema = { tables: Table[] };
         display: flex;
         justify-content: space-between;
         gap: 8px;
-        padding: 2px 0;
+        padding: 3px 0;
+        color: var(--text-2);
       }
+      .col-name { color: var(--text); }
       .col-type {
-        opacity: 0.6;
-        font-family: monospace;
+        color: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
       }
       .empty {
-        opacity: 0.6;
-        font-size: 13px;
+        color: var(--text-muted);
+        font-size: var(--text-sm);
       }
     `,
   ],

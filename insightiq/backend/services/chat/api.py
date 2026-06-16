@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.deps import get_db
@@ -62,6 +62,7 @@ class ForkConversationResponse(BaseModel):
 async def list_conversations(
     q: str | None = None,
     starred: bool | None = None,
+    datasource_id: uuid.UUID | None = None,
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationResponse]:
@@ -69,6 +70,8 @@ async def list_conversations(
         Conversation.tenant_id == ctx.tenant_id,
         Conversation.user_id == ctx.user_id,
     )
+    if datasource_id is not None:
+        stmt = stmt.where(Conversation.datasource_id == datasource_id)
     if starred is not None:
         stmt = stmt.where(Conversation.starred == starred)
     if q:
@@ -100,6 +103,23 @@ async def update_conversation(
     await db.commit()
     await db.refresh(conv)
     return _conv_response(conv)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    conv = await _get_conversation(db, ctx, conversation_id)
+    await db.execute(
+        delete(ChatMessage).where(
+            ChatMessage.conversation_id == conv.id,
+            ChatMessage.tenant_id == ctx.tenant_id,
+        )
+    )
+    await db.delete(conv)
+    await db.commit()
 
 
 @router.post("/conversations/{conversation_id}/fork", response_model=ForkConversationResponse)

@@ -21,23 +21,29 @@ import { ResponseRendererComponent } from './response-renderer.component';
         height: 100%;
         display: flex;
         flex-direction: column;
-        padding: 12px;
+        padding: 14px;
         box-sizing: border-box;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
       }
       .head {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
       }
       h3 {
         margin: 0;
-        font-size: 14px;
+        font-size: var(--text-base);
+        color: var(--text);
       }
       .mode {
-        font-size: 11px;
-        opacity: 0.6;
+        font-size: var(--text-xs);
+        color: var(--text-muted);
         text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
     `,
   ],

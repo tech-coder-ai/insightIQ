@@ -60,47 +60,64 @@ type ResponsePayload = {
     `
       .response h3 {
         margin: 0 0 12px;
-        font-size: 16px;
+        font-size: var(--text-md);
+        color: var(--text);
       }
       .kpi {
-        padding: 20px;
-        border-radius: 12px;
-        background: rgba(88, 166, 255, 0.12);
+        padding: 24px;
+        border-radius: var(--radius-md);
+        background: var(--primary-soft);
+        border: 1px solid var(--primary-soft-2);
         text-align: center;
       }
       .kpi-value {
         font-size: 36px;
         font-weight: 700;
+        color: var(--primary-text);
       }
       .kpi-label {
-        opacity: 0.75;
+        color: var(--text-2);
         margin-top: 4px;
       }
       .chart {
         display: grid;
-        gap: 8px;
+        gap: 9px;
       }
       .bar-row {
         display: grid;
-        grid-template-columns: 100px 1fr 60px;
-        gap: 8px;
+        grid-template-columns: 110px 1fr 60px;
+        gap: 10px;
         align-items: center;
-        font-size: 13px;
+        font-size: var(--text-sm);
+        color: var(--text-2);
       }
       .bar-track {
         height: 10px;
-        background: rgba(255, 255, 255, 0.08);
-        border-radius: 999px;
+        background: var(--surface-3);
+        border-radius: var(--radius-pill);
         overflow: hidden;
       }
       .bar-fill {
         height: 100%;
-        background: #58a6ff;
-        border-radius: 999px;
+        background: linear-gradient(90deg, var(--primary), var(--primary-hover));
+        border-radius: var(--radius-pill);
+        transition: width var(--dur) var(--ease);
       }
+      .bar-value { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
       .explanation {
-        line-height: 1.5;
+        line-height: 1.6;
         white-space: pre-wrap;
+        color: var(--text);
+      }
+      pre {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 12px;
+        overflow: auto;
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        color: var(--text-2);
       }
     `,
   ],

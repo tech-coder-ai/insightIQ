@@ -4,16 +4,20 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
 from core.deps import get_db
-import core.ingestion.chunkers.recursive  # noqa: F401 — register chunker
-from core.ingestion.chunkers.factory import CHUNKERS
-from core.ingestion.pipeline_router import extract_document
+from core.ingestion.jobs import (
+    IngestionJob,
+    create_job,
+    get_job,
+    run_file_ingestion,
+    run_scrape_ingestion,
+)
 from core.models import ChatMessage, Conversation, Document, DocumentChunk, DocumentCollection
 from core.rag.engine import RagEngine
 from core.rag.profiles import load_profile
@@ -92,61 +96,104 @@ async def list_collections(
     ]
 
 
-@router.post("/collections/{collection_id}/upload")
-async def upload_document(
+@router.delete("/collections/{collection_id}")
+async def delete_collection(
     collection_id: uuid.UUID,
-    file: UploadFile = File(...),
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     col = await _get_collection(db, ctx.tenant_id, collection_id)
+
+    await db.execute(
+        delete(DocumentChunk).where(
+            DocumentChunk.collection_id == col.id, DocumentChunk.tenant_id == ctx.tenant_id
+        )
+    )
+    await db.execute(
+        delete(Document).where(
+            Document.collection_id == col.id, Document.tenant_id == ctx.tenant_id
+        )
+    )
+    await db.delete(col)
+    await db.commit()
+
+    try:
+        QdrantStore().delete_collection(str(col.id))
+    except Exception:  # noqa: BLE001 - vector store cleanup is best-effort
+        pass
+
+    return {"status": "deleted", "collection_id": str(col.id)}
+
+
+class ScrapeRequest(BaseModel):
+    url: str = Field(min_length=4)
+    depth: int = Field(default=0, ge=0, le=5)
+    max_pages: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/collections/{collection_id}/upload", response_model=IngestionJob)
+async def upload_document(
+    collection_id: uuid.UUID,
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> IngestionJob:
+    col = await _get_collection(db, ctx.tenant_id, collection_id)
+
     settings = get_settings_resolver().resolve()
     upload_dir = Path(settings.storage.upload_dir) / str(col.tenant_id) / str(col.id)
     upload_dir.mkdir(parents=True, exist_ok=True)
-
-    doc_id = uuid.uuid4()
-    dest = upload_dir / f"{doc_id}_{file.filename}"
+    dest = upload_dir / f"{uuid.uuid4()}_{file.filename}"
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    markdown, extractor_used, confidence = await extract_document(str(dest))
-    chunker = CHUNKERS.create("recursive")
-    chunks = chunker.chunk(markdown, document_id=str(doc_id))
-
-    store = QdrantStore()
-    collection_name = str(col.id)
-    await store.upsert_chunks(
-        collection_name,
-        tenant_id=str(ctx.tenant_id),
-        chunks=chunks,
-        embedder_key=col.embedding_model,
-    )
-
-    doc = Document(
-        id=doc_id,
-        collection_id=col.id,
-        tenant_id=ctx.tenant_id,
+    job = create_job("file", str(col.id))
+    background.add_task(
+        run_file_ingestion,
+        job.job_id,
+        file_path=str(dest),
         filename=file.filename or "upload",
-        content_markdown=markdown,
-        metadata_json={"extractor_used": extractor_used, "confidence": confidence},
+        collection_id=str(col.id),
+        tenant_id=str(ctx.tenant_id),
+        embedding_model=col.embedding_model,
     )
-    db.add(doc)
-    for c in chunks:
-        db.add(
-            DocumentChunk(
-                document_id=doc_id,
-                collection_id=col.id,
-                tenant_id=ctx.tenant_id,
-                chunk_index=c["chunk_index"],
-                text=c["text"],
-                char_start=c["char_start"],
-                char_end=c["char_end"],
-                page_number=c.get("page_number"),
-                qdrant_point_id=c.get("qdrant_point_id"),
-            )
-        )
-    await db.commit()
-    return {"document_id": str(doc_id), "extractor_used": extractor_used, "chunks": str(len(chunks))}
+    return job
+
+
+@router.post("/collections/{collection_id}/scrape", response_model=IngestionJob)
+async def scrape_url(
+    collection_id: uuid.UUID,
+    req: ScrapeRequest,
+    background: BackgroundTasks,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> IngestionJob:
+    col = await _get_collection(db, ctx.tenant_id, collection_id)
+
+    job = create_job("scrape", str(col.id))
+    background.add_task(
+        run_scrape_ingestion,
+        job.job_id,
+        url=req.url,
+        depth=req.depth,
+        max_pages=req.max_pages,
+        collection_id=str(col.id),
+        tenant_id=str(ctx.tenant_id),
+        embedding_model=col.embedding_model,
+    )
+    return job
+
+
+@router.get("/jobs/{job_id}", response_model=IngestionJob)
+async def get_ingestion_job(
+    job_id: str,
+    ctx: RequestContext = Depends(require_auth),
+) -> IngestionJob:
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="ingestion job not found or expired")
+    return job
 
 
 @router.post("/ask", response_model=AskDocsResponse)
@@ -173,7 +220,7 @@ async def ask_documents(
     answer_html = final.get("answer_html", answer)
     highlights = final.get("highlight_spans", [])
 
-    await _ensure_conversation(db, ctx, conversation_id, req.question)
+    await _ensure_conversation(db, ctx, conversation_id, col.id, req.question)
     snapshot = profile_cfg.model_dump()
 
     user_msg = ChatMessage(
@@ -227,7 +274,11 @@ async def _get_collection(
 
 
 async def _ensure_conversation(
-    db: AsyncSession, ctx: RequestContext, conversation_id: uuid.UUID, question: str
+    db: AsyncSession,
+    ctx: RequestContext,
+    conversation_id: uuid.UUID,
+    collection_id: uuid.UUID,
+    question: str,
 ) -> None:
     res = await db.execute(
         select(Conversation).where(
@@ -236,13 +287,18 @@ async def _ensure_conversation(
             Conversation.user_id == ctx.user_id,
         )
     )
-    if res.scalar_one_or_none() is None:
-        title = question[:80] + ("..." if len(question) > 80 else "")
+    title = question[:80] + ("..." if len(question) > 80 else "")
+    conv = res.scalar_one_or_none()
+    if conv is None:
         db.add(
             Conversation(
                 id=conversation_id,
                 tenant_id=ctx.tenant_id,
                 user_id=ctx.user_id,
                 title=title,
+                # `datasource_id` doubles as the collection association for docs chats.
+                datasource_id=collection_id,
             )
         )
+    elif conv.datasource_id is None:
+        conv.datasource_id = collection_id

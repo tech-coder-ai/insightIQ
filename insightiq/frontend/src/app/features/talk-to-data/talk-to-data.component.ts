@@ -1,407 +1,394 @@
 import { HttpClient } from '@angular/common/http';
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { DashboardService } from '../../core/dashboard.service';
 import { API_BASE } from '../../core/api.config';
-import { AuthService } from '../../core/auth.service';
-import { ChatSidebarComponent } from '../../shared/chat-sidebar.component';
 import { ResponseRendererComponent } from '../../shared/response-renderer.component';
 import { SchemaTreeComponent } from '../../shared/schema-tree.component';
 
-type DataSource = { id: string; name: string; db_type: string; dialect: string };
+type DataSource = { id: string; name: string; db_type: string; description?: string; metadata_status?: string };
 type Schema = { tables: { name: string; columns: { name: string; data_type: string }[] }[] };
 type ResponsePayload = { response_type: string; title?: string; data: Record<string, unknown> };
 type AskResponse = { conversation_id: string; sql: string; response: ResponsePayload };
+type Message = { role: 'user' | 'assistant'; question?: string; sql?: string; response?: ResponsePayload; error?: string };
 
 @Component({
   standalone: true,
-  imports: [
-    ReactiveFormsModule,
-    ChatSidebarComponent,
-    SchemaTreeComponent,
-    ResponseRendererComponent,
-  ],
+  imports: [ReactiveFormsModule, ResponseRendererComponent, SchemaTreeComponent, RouterLink],
   template: `
-    <div class="layout">
-      <app-chat-sidebar [activeId]="conversationId" (select)="onSelectConversation($event)" />
-
-      <div class="main">
-        <header>
-          <div>
-            <h1>Talk to Data</h1>
-            <p>Postgres, S3/MinIO (DuckDB), schema introspection, and dynamic responses</p>
-          </div>
-          <button type="button" (click)="logout()">Logout</button>
-        </header>
-
-        <div class="tabs">
-          <button [class.active]="sourceTab === 'postgres'" (click)="sourceTab = 'postgres'">Postgres</button>
-          <button [class.active]="sourceTab === 's3'" (click)="sourceTab = 's3'">S3 / MinIO</button>
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <h1>Talk to Data</h1>
+          <p>Ask questions in plain English. InsightIQ generates SQL and visualizes the result.</p>
         </div>
+        @if (sources().length === 0) {
+          <a routerLink="/datasources" class="btn-primary">+ Add datasource</a>
+        }
+      </div>
 
-        <section class="card">
-          <h2>Register datasource</h2>
-          @if (sourceTab === 'postgres') {
-            <form class="grid" [formGroup]="pgForm" (ngSubmit)="registerPostgres()">
-              <input formControlName="name" placeholder="Source name" />
-              <input formControlName="host" placeholder="Host" />
-              <input formControlName="port" type="number" placeholder="Port" />
-              <input formControlName="database" placeholder="Database" />
-              <input formControlName="user" placeholder="User" />
-              <input formControlName="password" type="password" placeholder="Password" />
-              <button type="submit" class="primary">Register Postgres</button>
-            </form>
-          } @else {
-            <form class="grid" [formGroup]="s3Form" (ngSubmit)="registerS3()">
-              <input formControlName="name" placeholder="Source name" />
-              <input formControlName="endpoint" placeholder="Endpoint (localhost:9000)" />
-              <input formControlName="region" placeholder="Region" />
-              <input formControlName="access_key" placeholder="Access key" />
-              <input formControlName="secret_key" type="password" placeholder="Secret key" />
-              <input formControlName="table_name" placeholder="Logical table name" />
-              <input formControlName="glob" placeholder="s3://bucket/path/*.parquet" />
-              <button type="submit" class="primary">Register S3</button>
-            </form>
-          }
-          @if (statusMessage) {
-            <p class="msg">{{ statusMessage }}</p>
-          }
-        </section>
-
-        <div class="split">
-          <section class="card">
-            <div class="row-head">
-              <h2>Schema</h2>
-              <button type="button" (click)="loadSchema()" [disabled]="!selectedSourceId">Refresh</button>
-              <button type="button" (click)="generateGlossary()" [disabled]="!selectedSourceId">
-                Generate glossary
-              </button>
-            </div>
-            <app-schema-tree [schema]="schema" />
-          </section>
-
-          <section class="card">
-            <h2>Ask a question</h2>
-            <form class="ask" [formGroup]="askForm" (ngSubmit)="ask()">
-              <select formControlName="datasourceId" (change)="onSourceChange()">
-                <option value="">Select datasource</option>
-                @for (ds of sources; track ds.id) {
-                  <option [value]="ds.id">{{ ds.name }} ({{ ds.db_type }})</option>
+      @if (sources().length === 0) {
+        <div class="empty">
+          <div class="empty-icon">📊</div>
+          <p>No datasources connected yet.</p>
+          <a routerLink="/datasources" class="btn-primary">Go to Datasources →</a>
+        </div>
+      } @else {
+        <div class="workspace">
+          <!-- ── Left: datasource selector + schema ── -->
+          <aside class="side-panel">
+            <div class="panel-section">
+              <div class="panel-label">Datasource</div>
+              <select [value]="selectedSourceId()" (change)="onSourceChange($any($event.target).value)">
+                <option value="">Select a datasource…</option>
+                @for (ds of sources(); track ds.id) {
+                  <option [value]="ds.id">{{ ds.name }}</option>
                 }
               </select>
-              <input formControlName="question" placeholder="e.g. revenue by region chart" />
-              <button type="submit" class="primary" [disabled]="askForm.invalid">Ask</button>
-            </form>
+            </div>
 
-            @if (lastSql) {
-              <pre class="sql">{{ lastSql }}</pre>
+            @if (selectedSource(); as src) {
+              @if (src.description) {
+                <div class="purpose-card">
+                  <div class="purpose-label">Purpose</div>
+                  <p>{{ src.description }}</p>
+                </div>
+              }
             }
-            <app-response-renderer [payload]="lastResponse" />
-            @if (lastResponse) {
-              <button type="button" class="pin" (click)="pinToDashboard()">Pin to dashboard</button>
+
+            @if (selectedSourceId()) {
+              <div class="panel-section schema-section">
+                <div class="panel-label">
+                  Schema
+                  <button class="btn-ghost tiny" (click)="loadSchema(true)">↻</button>
+                </div>
+                <app-schema-tree [schema]="schema()" />
+              </div>
             }
-          </section>
+          </aside>
+
+          <!-- ── Right: chat ── -->
+          <div class="chat-area">
+            @if (messages().length === 0) {
+              <div class="chat-empty">
+                <p>Select a datasource on the left, then ask a question below.</p>
+                <div class="suggestions">
+                  @for (s of suggestions; track s) {
+                    <button class="suggestion" (click)="quickAsk(s)">{{ s }}</button>
+                  }
+                </div>
+              </div>
+            }
+
+            <div class="messages">
+              @for (msg of messages(); track $index) {
+                @if (msg.role === 'user') {
+                  <div class="msg user-msg">{{ msg.question }}</div>
+                } @else {
+                  <div class="msg assistant-msg">
+                    @if (msg.error) {
+                      <div class="error">{{ msg.error }}</div>
+                    } @else {
+                      @if (msg.sql) {
+                        <details class="sql-details">
+                          <summary>Generated SQL</summary>
+                          <pre>{{ msg.sql }}</pre>
+                        </details>
+                      }
+                      <app-response-renderer [payload]="msg.response ?? null" />
+                      <div class="msg-actions">
+                        <button class="btn-ghost tiny" (click)="pinToDashboard(msg)">📌 Pin to dashboard</button>
+                      </div>
+                    }
+                  </div>
+                }
+              }
+
+              @if (loading()) {
+                <div class="msg assistant-msg thinking">
+                  <span></span><span></span><span></span>
+                </div>
+              }
+            </div>
+
+            <form class="input-bar" [formGroup]="askForm" (ngSubmit)="ask()">
+              <input
+                formControlName="question"
+                placeholder="e.g. Show monthly revenue by region as a bar chart"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading() || !selectedSourceId()">
+                Ask
+              </button>
+            </form>
+          </div>
         </div>
-      </div>
+      }
     </div>
   `,
-  styles: [
-    `
-      .layout {
-        display: flex;
-        min-height: 100vh;
-      }
-      .main {
-        flex: 1;
-        padding: 24px;
-        display: grid;
-        gap: 20px;
-        align-content: start;
-      }
-      header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      h1,
-      h2 {
-        margin: 0;
-      }
-      p {
-        margin: 4px 0 0;
-        opacity: 0.75;
-      }
-      .tabs {
-        display: flex;
-        gap: 8px;
-      }
-      .tabs button.active {
-        background: rgba(88, 166, 255, 0.25);
-      }
-      .card {
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 16px;
-        padding: 20px;
-        background: rgba(255, 255, 255, 0.03);
-        display: grid;
-        gap: 12px;
-      }
-      .split {
-        display: grid;
-        grid-template-columns: 1fr 2fr;
-        gap: 16px;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 10px;
-      }
-      .ask {
-        display: grid;
-        grid-template-columns: 1fr 2fr auto;
-        gap: 10px;
-      }
-      .row-head {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-      input,
-      select,
-      button {
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(0, 0, 0, 0.25);
-        color: inherit;
-      }
-      button {
-        cursor: pointer;
-      }
-      .primary {
-        background: rgba(88, 166, 255, 0.25);
-      }
-      .sql {
-        padding: 12px;
-        border-radius: 10px;
-        background: rgba(0, 0, 0, 0.35);
-        overflow: auto;
-        font-size: 12px;
-      }
-      .msg {
-        font-size: 13px;
-      }
-      .pin {
-        margin-top: 12px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(88, 166, 255, 0.2);
-        color: inherit;
-        cursor: pointer;
-      }
-        .layout {
-          flex-direction: column;
-        }
-        .split {
-          grid-template-columns: 1fr;
-        }
-        .ask {
-          grid-template-columns: 1fr;
-        }
-      }
-    `,
-  ],
+  styles: [`
+    .page { max-width: 1140px; }
+
+    .btn-primary {
+      padding: 9px 16px; border-radius: var(--radius-md); border: none;
+      background: var(--primary); color: var(--on-primary); font-size: var(--text-base);
+      font-weight: 550; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;
+      font-family: inherit; transition: background var(--dur-fast) var(--ease);
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: default; }
+    .btn-ghost {
+      padding: 5px 10px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+      background: transparent; color: var(--text-2); cursor: pointer; font-size: var(--text-sm);
+      font-family: inherit; transition: all var(--dur-fast) var(--ease);
+    }
+    .btn-ghost.tiny { padding: 3px 8px; font-size: var(--text-xs); }
+    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+
+    .empty {
+      text-align: center; padding: var(--space-12) var(--space-6);
+      border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
+      display: flex; flex-direction: column; align-items: center; gap: var(--space-4);
+      color: var(--text-2);
+    }
+    .empty-icon { font-size: 48px; }
+
+    /* ── Workspace ── */
+    .workspace {
+      display: grid;
+      grid-template-columns: 272px 1fr;
+      gap: 20px;
+      height: calc(100vh - 200px);
+      min-height: 520px;
+    }
+
+    /* ── Side panel ── */
+    .side-panel {
+      display: flex; flex-direction: column; gap: var(--space-4);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-4);
+      overflow-y: auto;
+      box-shadow: var(--shadow-sm);
+    }
+    .panel-section { display: flex; flex-direction: column; gap: 8px; }
+    .panel-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-muted); font-weight: 700; display: flex; align-items: center; gap: 6px;
+    }
+    .schema-section { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    select {
+      padding: 9px 11px; border-radius: var(--radius-md);
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit;
+    }
+    select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+    /* ── Chat ── */
+    .chat-area {
+      display: flex; flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    .chat-empty {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: var(--space-5); padding: var(--space-10); text-align: center; color: var(--text-2);
+    }
+    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    .suggestion {
+      padding: 7px 14px; border-radius: var(--radius-pill);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-2);
+      color: var(--text-2); cursor: pointer; font-size: var(--text-sm); font-family: inherit;
+      transition: all var(--dur-fast) var(--ease);
+    }
+    .suggestion:hover { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
+
+    .messages {
+      flex: 1; overflow-y: auto; padding: var(--space-5);
+      display: flex; flex-direction: column; gap: var(--space-4);
+    }
+    .msg { max-width: 92%; }
+    .user-msg {
+      align-self: flex-end;
+      background: var(--primary); color: var(--on-primary);
+      border-radius: 14px 14px 3px 14px;
+      padding: 10px 14px; font-size: var(--text-base);
+    }
+    .assistant-msg {
+      align-self: flex-start;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 3px 14px 14px 14px;
+      padding: 14px; font-size: var(--text-base);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .sql-details summary { cursor: pointer; font-size: var(--text-xs); color: var(--text-muted); }
+    .sql-details pre {
+      margin: 6px 0 0; padding: 10px; border-radius: var(--radius-md);
+      background: var(--bg); border: 1px solid var(--border); font-size: var(--text-xs);
+      overflow-x: auto; font-family: var(--font-mono);
+    }
+    .msg-actions { display: flex; gap: 8px; }
+    .error { color: var(--danger); font-size: var(--text-sm); }
+
+    /* thinking animation */
+    .thinking { padding: 16px !important; flex-direction: row !important; }
+    .thinking span {
+      display: inline-block; width: 7px; height: 7px;
+      border-radius: 50%; background: var(--primary-text); margin: 0 2px;
+      animation: bounce 1.2s infinite;
+    }
+    .thinking span:nth-child(2) { animation-delay: 0.2s; }
+    .thinking span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
+
+    .input-bar {
+      display: flex; gap: 10px; padding: var(--space-4);
+      border-top: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .input-bar input {
+      flex: 1; padding: 10px 14px; border-radius: var(--radius-md);
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit;
+      transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+    }
+    .input-bar input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .purpose-card { margin-top: 12px; padding: 12px 14px; background: var(--primary-soft); border: 1px solid var(--primary-soft-2); border-radius: var(--radius-md); }
+    .purpose-label { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--primary); margin-bottom: 4px; }
+    .purpose-card p { margin: 0; font-size: var(--text-sm); color: var(--text-2); line-height: 1.5; }
+  `],
 })
 export class TalkToDataComponent implements OnInit {
   private readonly dashboardService = inject(DashboardService);
   private readonly http = inject(HttpClient);
-  private readonly auth = inject(AuthService);
-  private readonly router = inject(Router);
   private readonly fb = inject(FormBuilder);
+  private readonly route = inject(ActivatedRoute);
 
-  sources: DataSource[] = [];
-  schema: Schema | null = null;
-  statusMessage = '';
-  lastSql = '';
-  lastResponse: ResponsePayload | null = null;
-  lastAskMeta: { sql: string; datasourceId: string; question: string } | null = null;
-  conversationId: string | null = null;
-  selectedSourceId = '';
-  sourceTab: 'postgres' | 's3' = 'postgres';
+  readonly sources = signal<DataSource[]>([]);
+  readonly selectedSourceId = signal('');
+  readonly schema = signal<Schema | null>(null);
+  readonly messages = signal<Message[]>([]);
+  readonly loading = signal(false);
 
-  readonly pgForm = this.fb.group({
-    name: ['Local Postgres', Validators.required],
-    host: ['localhost', Validators.required],
-    port: [5432, Validators.required],
-    database: ['insightiq', Validators.required],
-    user: ['insightiq', Validators.required],
-    password: ['insightiq', Validators.required],
-  });
+  readonly selectedSource = computed(() =>
+    this.sources().find((s) => s.id === this.selectedSourceId()) ?? null,
+  );
 
-  readonly s3Form = this.fb.group({
-    name: ['MinIO Sales', Validators.required],
-    endpoint: ['localhost:9000', Validators.required],
-    region: ['us-east-1', Validators.required],
-    access_key: ['minio', Validators.required],
-    secret_key: ['minio123456', Validators.required],
-    table_name: ['sales', Validators.required],
-    glob: ['s3://dw/sales/*.parquet', Validators.required],
-  });
+  private conversationId: string | null = null;
 
   readonly askForm = this.fb.group({
-    datasourceId: ['', Validators.required],
-    question: ['show all users', Validators.required],
+    question: ['', Validators.required],
   });
 
-  ngOnInit(): void {
-    if (!this.auth.isAuthenticated()) {
-      this.router.navigate(['/login']);
-      return;
-    }
-    this.loadSources();
-  }
+  readonly suggestions = [
+    'Show top 10 rows',
+    'Row count by status',
+    'Monthly trend as a line chart',
+    'Show schema summary',
+  ];
+
+  ngOnInit(): void { this.loadSources(); }
 
   loadSources(): void {
     this.http.get<DataSource[]>(`${API_BASE}/talk-to-data/sources`).subscribe({
-      next: (sources) => (this.sources = sources),
-    });
-  }
-
-  registerPostgres(): void {
-    const v = this.pgForm.getRawValue();
-    this.registerSource('postgres', {
-      host: v.host,
-      port: Number(v.port),
-      database: v.database,
-      user: v.user,
-      password: v.password,
-    }, v.name!);
-  }
-
-  registerS3(): void {
-    const v = this.s3Form.getRawValue();
-    this.registerSource(
-      's3_object_store',
-      {
-        endpoint: v.endpoint,
-        region: v.region,
-        access_key: v.access_key,
-        secret_key: v.secret_key,
-        url_style: 'path',
-        table_globs: { [v.table_name!]: v.glob },
-      },
-      v.name!,
-    );
-  }
-
-  registerSource(dbType: string, connection: Record<string, unknown>, name: string): void {
-    this.http
-      .post(`${API_BASE}/talk-to-data/sources`, { name, db_type: dbType, connection })
-      .subscribe({
-        next: () => {
-          this.statusMessage = 'Datasource registered.';
-          this.loadSources();
-        },
-        error: (err) => {
-          this.statusMessage = err?.error?.detail ?? 'Registration failed';
-        },
-      });
-  }
-
-  onSourceChange(): void {
-    this.selectedSourceId = this.askForm.getRawValue().datasourceId ?? '';
-    this.loadSchema();
-  }
-
-  loadSchema(): void {
-    if (!this.selectedSourceId) return;
-    this.http
-      .get<Schema>(`${API_BASE}/talk-to-data/sources/${this.selectedSourceId}/schema?refresh=true`)
-      .subscribe({ next: (schema) => (this.schema = schema) });
-  }
-
-  generateGlossary(): void {
-    if (!this.selectedSourceId) return;
-    this.http
-      .post(`${API_BASE}/talk-to-data/sources/${this.selectedSourceId}/glossary/generate`, {})
-      .subscribe({
-        next: (terms) => {
-          this.statusMessage = `Glossary generated (${(terms as unknown[]).length} terms).`;
-        },
-      });
-  }
-
-  ask(): void {
-    if (this.askForm.invalid) return;
-    const v = this.askForm.getRawValue();
-    this.http
-      .post<AskResponse>(`${API_BASE}/talk-to-data/ask`, {
-        datasource_id: v.datasourceId,
-        question: v.question,
-        conversation_id: this.conversationId,
-      })
-      .subscribe({
-        next: (res) => {
-          this.conversationId = res.conversation_id;
-          this.lastSql = res.sql;
-          this.lastResponse = res.response;
-          this.lastAskMeta = {
-            sql: res.sql,
-            datasourceId: v.datasourceId!,
-            question: v.question!,
-          };
-        },
-        error: (err) => {
-          this.statusMessage = err?.error?.detail ?? 'Query failed';
-        },
-      });
-  }
-
-  pinToDashboard(): void {
-    if (!this.lastResponse || !this.lastAskMeta) return;
-    const name = window.prompt('Dashboard name (or leave default to use first dashboard)', 'My Dashboard');
-    this.dashboardService.list().subscribe({
-      next: (dashboards) => {
-        const pin = (dashboardId: string) => {
-          this.dashboardService
-            .pinCard(dashboardId, {
-              title: this.lastAskMeta!.question,
-              card_type: this.lastResponse!.response_type,
-              response: this.lastResponse!,
-              source_type: 'sql',
-              source_config: {
-                datasource_id: this.lastAskMeta!.datasourceId,
-                sql: this.lastAskMeta!.sql,
-                question: this.lastAskMeta!.question,
-              },
-              refresh_mode: 'live',
-            })
-            .subscribe({
-              next: () => {
-                this.statusMessage = 'Pinned to dashboard.';
-              },
-            });
-        };
-        if (dashboards.length) {
-          pin(dashboards[0].id);
-        } else {
-          this.dashboardService.create(name || 'My Dashboard').subscribe({
-            next: (d) => pin(d.id),
-          });
+      next: (s) => {
+        this.sources.set(s);
+        const preselect = this.route.snapshot.queryParamMap.get('source');
+        if (preselect && !this.selectedSourceId() && s.some((d) => d.id === preselect)) {
+          this.onSourceChange(preselect);
         }
       },
     });
   }
 
-  onSelectConversation(id: string): void {
-    this.conversationId = id;
+  onSourceChange(id: string): void {
+    this.selectedSourceId.set(id);
+    this.schema.set(null);
+    this.messages.set([]);
+    this.conversationId = null;
+    if (id) this.loadSchema(false);
   }
 
-  logout(): void {
-    this.auth.logout();
-    this.router.navigate(['/login']);
+  loadSchema(refresh: boolean): void {
+    const id = this.selectedSourceId();
+    if (!id) return;
+    this.http.get<Schema>(`${API_BASE}/talk-to-data/sources/${id}/schema?refresh=${refresh}`).subscribe({
+      next: (s) => this.schema.set(s),
+    });
+  }
+
+  quickAsk(q: string): void {
+    this.askForm.patchValue({ question: q });
+    this.ask();
+  }
+
+  ask(): void {
+    const v = this.askForm.getRawValue();
+    if (!v.question || !this.selectedSourceId()) return;
+
+    this.messages.update((m) => [...m, { role: 'user', question: v.question! }]);
+    this.askForm.reset();
+    this.loading.set(true);
+
+    this.http.post<AskResponse>(`${API_BASE}/talk-to-data/ask`, {
+      datasource_id: this.selectedSourceId(),
+      question: v.question,
+      conversation_id: this.conversationId,
+    }).subscribe({
+      next: (res) => {
+        this.conversationId = res.conversation_id;
+        this.loading.set(false);
+        this.messages.update((m) => [...m, {
+          role: 'assistant',
+          sql: res.sql,
+          response: res.response,
+        }]);
+      },
+      error: (err: { error?: { detail?: string } }) => {
+        this.loading.set(false);
+        this.messages.update((m) => [...m, {
+          role: 'assistant',
+          error: err?.error?.detail ?? 'Query failed. Please try again.',
+        }]);
+      },
+    });
+  }
+
+  pinToDashboard(msg: Message): void {
+    if (!msg.response) return;
+    const question = msg.question ?? 'Pinned result';
+    this.dashboardService.list().subscribe({
+      next: (dashboards) => {
+        const doPın = (dashboardId: string) => {
+          this.dashboardService.pinCard(dashboardId, {
+            title: question,
+            card_type: msg.response!.response_type,
+            response: msg.response! as unknown as Record<string, unknown>,
+            source_type: 'sql',
+            source_config: {
+              datasource_id: this.selectedSourceId(),
+              sql: msg.sql,
+              question,
+            },
+            refresh_mode: 'live',
+          }).subscribe({ next: () => alert('Pinned to dashboard!') });
+        };
+        if (dashboards.length) {
+          doPın(dashboards[0].id);
+        } else {
+          this.dashboardService.create('My Dashboard').subscribe({ next: (d) => doPın(d.id) });
+        }
+      },
+    });
   }
 }

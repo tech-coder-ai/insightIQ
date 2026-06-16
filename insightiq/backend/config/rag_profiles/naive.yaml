@@ -20,7 +20,8 @@ curation:
   compress: false
   token_budget: 4000
 generation:
-  llm: heuristic
+  llm: openai
+  max_context_chunks: 6
   financial_graph: false
 reflection:
   critic: false

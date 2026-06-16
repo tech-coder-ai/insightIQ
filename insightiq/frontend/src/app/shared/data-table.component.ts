@@ -29,22 +29,29 @@ import { Component, Input } from '@angular/core';
     `
       .table-wrap {
         overflow: auto;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
       }
       table {
         width: 100%;
         border-collapse: collapse;
-        font-size: 13px;
+        font-size: var(--text-sm);
       }
       th,
       td {
-        padding: 10px 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        padding: 10px 13px;
+        border-bottom: 1px solid var(--border);
         text-align: left;
+        color: var(--text);
       }
+      tbody tr:last-child td { border-bottom: none; }
+      tbody tr:hover td { background: var(--surface-2); }
       th {
-        background: rgba(255, 255, 255, 0.04);
+        background: var(--surface-3);
+        color: var(--text-2);
+        font-weight: 600;
+        position: sticky;
+        top: 0;
       }
     `,
   ],

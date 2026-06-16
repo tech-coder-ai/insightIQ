@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypedDict
 
 
 class QueryIntent(StrEnum):
@@ -78,6 +78,37 @@ class HighlightedResponse:
 class RagProfile:
     profile: str
     raw: dict[str, Any]
+
+
+class RagGraphState(TypedDict, total=False):
+    """LangGraph state schema.
+
+    Every key must be declared so that values supplied in the initial input
+    (e.g. ``tenant_id``, ``collection_ids``) are kept as channels and persist
+    across nodes. ``total=False`` lets nodes return partial updates.
+    """
+
+    raw_query: str
+    conversation_history: list[dict[str, Any]]
+    collection_ids: list[str]
+    tenant_id: str
+    profile: dict[str, Any]
+    intent: str | None
+    language: str | None
+    needs_retrieval: bool
+    sub_queries: list[str]
+    query_variations: list[str]
+    hyde_doc: str | None
+    route: str | None
+    candidates: list[Any]
+    fused: list[Any]
+    reranked: list[Any]
+    context: Any
+    draft_answer: str | None
+    critic: Any
+    retrieval_round: int
+    final: Any
+    trace: dict[str, Any]
 
 
 @dataclass

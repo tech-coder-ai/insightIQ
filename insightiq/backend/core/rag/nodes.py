@@ -175,14 +175,55 @@ async def node_curate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str,
     }
 
 
+_GROUNDED_SYSTEM = (
+    "You are InsightIQ's document assistant. Answer the user's question using ONLY the "
+    "information in the provided context passages. Each passage is labelled with a "
+    "chunk_id.\n\n"
+    "Formatting requirements — respond in GitHub-Flavoured Markdown and make it "
+    "presentable:\n"
+    "- Use headings, **bold** labels, and bullet or numbered lists to structure the answer.\n"
+    "- When comparing items or listing attributes, use a Markdown table.\n"
+    "- For processes, relationships, hierarchies or flows, include a Mermaid diagram in a "
+    "```mermaid code block (e.g. `flowchart TD` or `graph LR`).\n"
+    "- Use fenced code blocks for code or config.\n\n"
+    "Citations — after each sentence or bullet that uses a passage, append a citation in "
+    "the exact form [SOURCE:<chunk_id>] using that passage's chunk_id (place them at the "
+    "end of sentences/list items, never inside a table cell or code block). If several "
+    "passages support a point, cite each.\n\n"
+    "If the answer is not contained in the context, say you could not find it in the "
+    "provided documents."
+)
+
+
+def _build_context_block(chunks: list[RetrievedChunk], limit: int) -> str:
+    blocks = []
+    for c in chunks[:limit]:
+        blocks.append(f"[chunk_id: {c.chunk_id}]\n{c.text}")
+    return "\n\n".join(blocks)
+
+
+def _extractive_fallback(chunks: list[RetrievedChunk], reason: str) -> str:
+    top = chunks[0]
+    snippet = top.text[:500].strip()
+    return (
+        f"\u26a0\ufe0f The language model is not available right now ({reason}), so here is the "
+        f"most relevant passage I found:\n\n{snippet} [SOURCE:{top.chunk_id}]"
+    )
+
+
 async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str, Any]:
     query = state["raw_query"]
+    provider_key = cfg.generation.get("llm", "heuristic")
+
     if not state.get("needs_retrieval", True):
-        llm = LLMProviderFactory.create(cfg.generation.get("llm", "heuristic"))
-        answer = await llm.complete(
-            system="You are a helpful assistant.",
-            messages=[LLMMessage(role="user", content=query)],
-        )
+        llm = LLMProviderFactory.create(provider_key)
+        try:
+            answer = await llm.complete(
+                system="You are InsightIQ, a helpful and concise assistant.",
+                messages=[LLMMessage(role="user", content=query)],
+            )
+        except Exception as exc:  # noqa: BLE001 - surface a friendly message instead of 500
+            answer = f"\u26a0\ufe0f The language model is not available right now ({exc})."
         return {"draft_answer": answer}
 
     context_data = state.get("context") or {}
@@ -191,12 +232,25 @@ async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[st
         return {"draft_answer": "I could not find relevant information in the uploaded documents."}
 
     if state.get("intent") == QueryIntent.financial_math.value and cfg.generation.get("financial_graph"):
-        answer = _financial_answer(query, chunks)
-    else:
-        parts = []
-        for chunk in chunks[:3]:
-            parts.append(f"Based on the documents: {chunk.text[:300]} [SOURCE:{chunk.chunk_id}]")
-        answer = " ".join(parts)
+        return {"draft_answer": _financial_answer(query, chunks)}
+
+    max_chunks = int(cfg.generation.get("max_context_chunks", 6))
+    context_block = _build_context_block(chunks, max_chunks)
+    user_prompt = f"Context passages:\n\n{context_block}\n\nQuestion: {query}"
+
+    llm = LLMProviderFactory.create(provider_key)
+    try:
+        answer = await llm.complete(
+            system=_GROUNDED_SYSTEM,
+            messages=[LLMMessage(role="user", content=user_prompt)],
+        )
+        if not answer.strip():
+            answer = _extractive_fallback(chunks, "empty response")
+    except Exception as exc:  # noqa: BLE001 - keep the chat responsive, surface the reason
+        answer = _extractive_fallback(chunks, str(exc))
+
+    if "[SOURCE:" not in answer:
+        answer = f"{answer} [SOURCE:{chunks[0].chunk_id}]"
 
     return {"draft_answer": answer}
 
@@ -228,7 +282,14 @@ async def node_highlight(state: dict[str, Any], cfg: RagProfileConfig) -> dict[s
         from core.rag.state import HighlightedResponse
 
         final = HighlightedResponse(answer=answer, answer_html=answer, highlight_spans=[])
-    return {"final": final.__dict__}
+    return {
+        "final": {
+            "answer": final.answer,
+            "answer_html": final.answer_html,
+            "highlight_spans": [h.__dict__ for h in final.highlight_spans],
+            "response_type": final.response_type,
+        }
+    }
 
 
 def _financial_answer(query: str, chunks: list[RetrievedChunk]) -> str:

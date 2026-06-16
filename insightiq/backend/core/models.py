@@ -63,6 +63,8 @@ class DataSource(Base):
     name: Mapped[str] = mapped_column(String(200))
     db_type: Mapped[str] = mapped_column(String(64))
     dialect: Mapped[str] = mapped_column(String(64), default="postgres")
+    description: Mapped[str] = mapped_column(Text(), default="")
+    metadata_status: Mapped[str] = mapped_column(String(32), default="draft")
     connection_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
     schema_snapshot_json: Mapped[dict] = mapped_column(JSONB, default=dict)
     relationships_json: Mapped[list] = mapped_column(JSONB, default=list)

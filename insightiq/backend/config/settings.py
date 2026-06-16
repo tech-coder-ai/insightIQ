@@ -59,6 +59,10 @@ class SchedulerSettings(BaseModel):
     poll_interval_seconds: int = 60
 
 
+class AuthSettings(BaseModel):
+    disabled: bool = False
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INSIGHTIQ_", env_nested_delimiter="__")
 
@@ -72,6 +76,7 @@ class AppSettings(BaseSettings):
     rate_limit: RateLimitSettings = RateLimitSettings()
     email: EmailSettings = EmailSettings()
     scheduler: SchedulerSettings = SchedulerSettings()
+    auth: AuthSettings = AuthSettings()
 
 
 class SettingsSnapshot(BaseModel):
@@ -105,6 +110,8 @@ class SettingsResolver:
             settings = settings.model_copy(update=request_overrides)
         # Dev ergonomics: if running in dev without explicit RS256 keys, generate ephemeral keys
         # so local registration/login works without exporting PEMs.
+        if settings.env == "dev":
+            settings.auth.disabled = True
         if settings.env == "dev" and (not settings.jwt.private_key_pem or not settings.jwt.public_key_pem):
             key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             settings.jwt.private_key_pem = key.private_bytes(

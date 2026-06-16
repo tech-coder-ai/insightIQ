@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config.settings import get_settings_resolver
+from core.dev_auth import DEV_TENANT_ID, DEV_USER_ID
 from core.security import TokenClaims, decode_access_token
 from core.types import Role
 
@@ -20,12 +21,18 @@ class RequestContext:
         self.role = role
 
 
+def _dev_context() -> RequestContext:
+    return RequestContext(user_id=DEV_USER_ID, tenant_id=DEV_TENANT_ID, role=Role.admin)
+
+
 def require_auth(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> RequestContext:
+    settings = get_settings_resolver().resolve()
+    if settings.auth.disabled:
+        return _dev_context()
     if creds is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token")
-    settings = get_settings_resolver().resolve()
     try:
         claims: TokenClaims = decode_access_token(settings=settings, token=creds.credentials)
     except Exception:
@@ -42,4 +49,3 @@ def require_role(min_role: Role):
         return ctx
 
     return dep
-
