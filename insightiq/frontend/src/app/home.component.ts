@@ -1,12 +1,13 @@
+import { AsyncPipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { Component, inject } from '@angular/core';
-import { AsyncPipe } from '@angular/common';
+import { RouterLink } from '@angular/router';
 
 type HealthzResponse = { status: string };
 
 @Component({
   standalone: true,
-  imports: [AsyncPipe],
+  imports: [AsyncPipe, RouterLink],
   template: `
     <div class="wrap">
       <div class="card">
@@ -24,6 +25,11 @@ type HealthzResponse = { status: string };
               <span class="mono">http://localhost:8000/healthz</span>
             }
           </div>
+        </div>
+
+        <div class="links">
+          <a routerLink="/login">Login / Register</a>
+          <a routerLink="/talk-to-data">Talk to Data</a>
         </div>
       </div>
     </div>
@@ -86,6 +92,15 @@ type HealthzResponse = { status: string };
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
           monospace;
         opacity: 0.9;
+      }
+      .links {
+        margin-top: 20px;
+        display: flex;
+        gap: 16px;
+      }
+      .links a {
+        color: #8ec5ff;
+        text-decoration: none;
       }
     `,
   ],
