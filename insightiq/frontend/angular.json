@@ -14,7 +14,7 @@
           "options": {
             "outputPath": "dist/insightiq",
             "index": "src/index.html",
-            "main": "src/main.ts",
+            "browser": "src/main.ts",
             "polyfills": [],
             "tsConfig": "tsconfig.app.json",
             "assets": [],
@@ -30,6 +30,9 @@
         }
       }
     }
+  },
+  "cli": {
+    "analytics": false
   }
 }
 

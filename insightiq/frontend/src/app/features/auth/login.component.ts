@@ -2,7 +2,7 @@ import { Component, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
-import { AuthService } from '../core/auth.service';
+import { AuthService } from '../../core/auth.service';
 
 @Component({
   standalone: true,
@@ -127,7 +127,7 @@ export class LoginComponent {
 
     req.subscribe({
       next: () => this.router.navigate(['/talk-to-data']),
-      error: (err) => {
+      error: (err: { error?: { detail?: string } }) => {
         this.error = err?.error?.detail ?? 'Authentication failed';
       },
     });
