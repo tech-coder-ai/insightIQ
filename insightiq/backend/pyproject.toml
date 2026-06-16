@@ -27,6 +27,8 @@ dependencies = [
   "opentelemetry-sdk>=1.27.0",
   "opentelemetry-instrumentation-fastapi>=0.48b0",
   "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+  "reportlab>=4.2.0",
+  "python-pptx>=1.0.2",
 ]
 
 [tool.uv]

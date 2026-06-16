@@ -3,6 +3,7 @@ import { Component, EventEmitter, Input, OnInit, Output, inject } from '@angular
 import { FormsModule } from '@angular/forms';
 
 import { API_BASE } from '../core/api.config';
+import { ExportService } from '../core/export.service';
 
 type Conversation = {
   id: string;
@@ -21,6 +22,12 @@ type Conversation = {
       <div class="head">
         <h2>Chat History</h2>
         <input [(ngModel)]="search" (ngModelChange)="load()" placeholder="Search..." />
+        @if (activeId) {
+          <div class="export-row">
+            <button type="button" (click)="exportActive('markdown')">Export MD</button>
+            <button type="button" (click)="exportActive('pdf')">Export PDF</button>
+          </div>
+        }
       </div>
       <ul>
         @for (c of conversations; track c.id) {
@@ -98,11 +105,24 @@ type Conversation = {
         color: inherit;
         cursor: pointer;
       }
+      .export-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .export-row button {
+        flex: 1;
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 11px;
+      }
     `,
   ],
 })
 export class ChatSidebarComponent implements OnInit {
   private readonly http = inject(HttpClient);
+  private readonly exportService = inject(ExportService);
 
   @Input() activeId: string | null = null;
   @Output() select = new EventEmitter<string>();
@@ -128,5 +148,12 @@ export class ChatSidebarComponent implements OnInit {
         starred: !conv.starred,
       })
       .subscribe({ next: () => this.load() });
+  }
+
+  exportActive(format: 'markdown' | 'pdf'): void {
+    if (!this.activeId) return;
+    this.exportService.exportConversation(this.activeId, format).subscribe({
+      next: (res) => this.exportService.downloadBlob(res, `conversation.${format === 'markdown' ? 'md' : 'pdf'}`),
+    });
   }
 }

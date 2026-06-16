@@ -47,6 +47,16 @@ class RateLimitSettings(BaseModel):
     burst: int = 30
 
 
+class EmailSettings(BaseModel):
+    from_address: str = "noreply@insightiq.local"
+    enabled: bool = True
+
+
+class SchedulerSettings(BaseModel):
+    enabled: bool = True
+    poll_interval_seconds: int = 60
+
+
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="INSIGHTIQ_", env_nested_delimiter="__")
 
@@ -58,6 +68,8 @@ class AppSettings(BaseSettings):
     redis: RedisSettings = RedisSettings()
     telemetry: TelemetrySettings = TelemetrySettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
+    email: EmailSettings = EmailSettings()
+    scheduler: SchedulerSettings = SchedulerSettings()
 
 
 class SettingsSnapshot(BaseModel):

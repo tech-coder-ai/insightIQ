@@ -7,12 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
 from config.settings import get_settings_resolver
+from core.jobs.report_scheduler import start_report_scheduler, stop_report_scheduler
 from core.telemetry.logging import configure_logging
 from core.telemetry.otel import setup_otel
 from gateway.middleware import CorrelationIdMiddleware, MetricsMiddleware, RateLimitMiddleware
 from services.admin.api import router as admin_router
 from services.auth.api import router as auth_router
 from services.chat.api import router as chat_router
+from services.export.api import router as export_router
+from services.reports.api import router as reports_router
 from services.dashboards.api import public_router as dashboards_public_router
 from services.dashboards.api import router as dashboards_router
 from services.prompt_studio.api import router as prompt_studio_router
@@ -26,7 +29,9 @@ settings = get_settings_resolver().resolve()
 async def lifespan(app: FastAPI):
     configure_logging(json_logs=settings.telemetry.log_json)
     setup_otel(app, settings)
+    start_report_scheduler()
     yield
+    stop_report_scheduler()
 
 
 app = FastAPI(title="InsightIQ Gateway", version="0.0.0", lifespan=lifespan)
@@ -59,3 +64,5 @@ app.include_router(dashboards_router)
 app.include_router(dashboards_public_router)
 app.include_router(prompt_studio_router)
 app.include_router(admin_router)
+app.include_router(export_router)
+app.include_router(reports_router)

@@ -6,6 +6,8 @@ import { GridsterConfig, GridsterItem, GridsterModule } from 'angular-gridster2'
 import { Subscription, interval } from 'rxjs';
 
 import { DashboardCard, DashboardDetail, DashboardService } from '../../core/dashboard.service';
+import { ExportService } from '../../core/export.service';
+import { ReportService } from '../../core/report.service';
 import { AuthService } from '../../core/auth.service';
 import { DashboardCardComponent } from '../../shared/dashboard-card.component';
 
@@ -27,6 +29,9 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         </div>
         <div class="actions">
           <button type="button" (click)="refreshLiveCards()">Refresh live</button>
+          <button type="button" (click)="exportDashboard('pdf')">Export PDF</button>
+          <button type="button" (click)="exportDashboard('pptx')">Export PPT</button>
+          <button type="button" (click)="scheduleReport()">Schedule email</button>
           <button type="button" (click)="share()">Share</button>
           <button type="button" (click)="logout()">Logout</button>
         </div>
@@ -112,6 +117,8 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly dashboards = inject(DashboardService);
+  private readonly exportService = inject(ExportService);
+  private readonly reports = inject(ReportService);
   private readonly auth = inject(AuthService);
   private readonly fb = inject(FormBuilder);
 
@@ -204,6 +211,27 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
         this.shareUrl = `${window.location.origin}${res.url_path}`;
       },
     });
+  }
+
+  exportDashboard(format: 'pdf' | 'pptx'): void {
+    this.exportService.exportDashboard(this.dashboardId, format).subscribe({
+      next: (res) => this.exportService.downloadBlob(res, `dashboard.${format}`),
+    });
+  }
+
+  scheduleReport(): void {
+    const email = window.prompt('Recipient email for scheduled PDF report?');
+    if (!email) return;
+    this.reports
+      .create({
+        dashboard_id: this.dashboardId,
+        recipient_email: email,
+        interval_seconds: 3600,
+        export_format: 'pdf',
+      })
+      .subscribe({
+        next: () => window.alert('Report scheduled (hourly). Check backend logs for dev email delivery.'),
+      });
   }
 
   logout(): void {
