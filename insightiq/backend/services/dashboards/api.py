@@ -246,6 +246,7 @@ async def refresh_card(
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
     card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=False)
+    if card.refresh_mode == "snapshot":
         return _card_response(card)
 
     refresher = CardRefresherFactory.create(card.source_type)

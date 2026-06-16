@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.ingestion.base import IChunker
 from core.ingestion.chunkers.factory import CHUNKERS
 
 
