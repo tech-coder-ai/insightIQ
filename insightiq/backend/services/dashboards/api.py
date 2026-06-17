@@ -62,8 +62,9 @@ class PinCardRequest(BaseModel):
     auto_refresh_seconds: int | None = None
 
 
-class UpdateCardLayoutRequest(BaseModel):
-    layout_json: dict[str, Any]
+class UpdateCardRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    layout_json: dict[str, Any] | None = None
 
 
 class UpdateFiltersRequest(BaseModel):
@@ -234,18 +235,47 @@ async def pin_card(
 
 
 @router.patch("/{dashboard_id}/cards/{card_id}", response_model=CardResponse)
-async def update_card_layout(
+async def update_card(
     dashboard_id: uuid.UUID,
     card_id: uuid.UUID,
-    req: UpdateCardLayoutRequest,
+    req: UpdateCardRequest,
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
+    if req.title is None and req.layout_json is None:
+        raise HTTPException(status_code=400, detail="no updates provided")
     card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=True)
-    card.layout_json = req.layout_json
+    if req.title is not None:
+        card.title = req.title
+    if req.layout_json is not None:
+        card.layout_json = req.layout_json
     await db.commit()
     await db.refresh(card)
     return _card_response(card)
+
+
+@router.delete("/{dashboard_id}/cards/{card_id}", status_code=204)
+async def delete_card(
+    dashboard_id: uuid.UUID,
+    card_id: uuid.UUID,
+    request: Request,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=True)
+    card_title = card.title
+    await db.delete(card)
+    await record_audit(
+        db,
+        action="delete_card",
+        resource_type="dashboard_card",
+        resource_id=str(card_id),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        metadata={"dashboard_id": str(dashboard_id), "title": card_title},
+        ip_address=request.client.host if request.client else None,
+    )
+    await db.commit()
 
 
 @router.post("/{dashboard_id}/cards/{card_id}/refresh", response_model=CardResponse)

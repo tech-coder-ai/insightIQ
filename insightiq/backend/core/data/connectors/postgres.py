@@ -150,7 +150,11 @@ class PostgresConnector(IDBConnector):
         guard = check_readonly_select(sql)
         if not guard.ok:
             raise ValueError(guard.error or "destructive SQL is not allowed")
-        result = await self._session.execute(text(sql))
-        rows = result.fetchall()
-        cols = list(result.keys())
-        return QueryResult(columns=cols, rows=[json_safe_row(list(r)) for r in rows])
+        try:
+            result = await self._session.execute(text(sql))
+            rows = result.fetchall()
+            cols = list(result.keys())
+            return QueryResult(columns=cols, rows=[json_safe_row(list(r)) for r in rows])
+        except Exception:
+            await self._session.rollback()
+            raise

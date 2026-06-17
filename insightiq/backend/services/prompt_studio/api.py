@@ -12,6 +12,7 @@ from core.deps import get_db
 from core.llm.base import LLMMessage
 from core.llm.factory import LLMProviderFactory
 from core.models import DashboardCard, PromptRun, PromptTemplate, PromptVersion
+from core.prompts.bindings import merge_template_variables, resolve_binding_context
 from core.prompts.judge import judge_output
 from core.prompts.renderer import render_template
 from core.request_context import RequestContext, require_auth, require_role
@@ -35,6 +36,19 @@ class CreateTemplateRequest(BaseModel):
     description: str = ""
     bindings_json: dict[str, Any] = Field(default_factory=dict)
     template_body: str = Field(min_length=1)
+    system_prompt: str = ""
+    variables_schema_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateTemplateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    bindings_json: dict[str, Any] | None = None
+
+
+class TemplateDetailResponse(TemplateResponse):
+    latest_version_id: uuid.UUID | None = None
+    template_body: str = ""
     system_prompt: str = ""
     variables_schema_json: dict[str, Any] = Field(default_factory=dict)
 
@@ -66,6 +80,7 @@ class RunResponse(BaseModel):
     output: str
     eval_scores: dict
     response: dict
+    context_preview: str = ""
 
 
 class PinRunRequest(BaseModel):
@@ -142,6 +157,59 @@ async def list_templates(
     return out
 
 
+@router.get("/templates/{template_id}", response_model=TemplateDetailResponse)
+async def get_template(
+    template_id: uuid.UUID,
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> TemplateDetailResponse:
+    tmpl = await _get_template(db, ctx, template_id)
+    version = await _get_version(db, tmpl.id, None)
+    ver_res = await db.execute(
+        select(func.max(PromptVersion.version_number)).where(PromptVersion.template_id == tmpl.id)
+    )
+    return TemplateDetailResponse(
+        id=tmpl.id,
+        name=tmpl.name,
+        description=tmpl.description,
+        bindings_json=tmpl.bindings_json,
+        is_shared=tmpl.is_shared,
+        latest_version=ver_res.scalar_one(),
+        latest_version_id=version.id,
+        template_body=version.template_body,
+        system_prompt=version.system_prompt,
+        variables_schema_json=version.variables_schema_json,
+    )
+
+
+@router.patch("/templates/{template_id}", response_model=TemplateResponse)
+async def update_template(
+    template_id: uuid.UUID,
+    req: UpdateTemplateRequest,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> TemplateResponse:
+    tmpl = await _get_template(db, ctx, template_id, owner_only=True)
+    if req.name is not None:
+        tmpl.name = req.name
+    if req.description is not None:
+        tmpl.description = req.description
+    if req.bindings_json is not None:
+        tmpl.bindings_json = req.bindings_json
+    await db.commit()
+    ver_res = await db.execute(
+        select(func.max(PromptVersion.version_number)).where(PromptVersion.template_id == tmpl.id)
+    )
+    return TemplateResponse(
+        id=tmpl.id,
+        name=tmpl.name,
+        description=tmpl.description,
+        bindings_json=tmpl.bindings_json,
+        is_shared=tmpl.is_shared,
+        latest_version=ver_res.scalar_one(),
+    )
+
+
 @router.post("/templates/{template_id}/versions", response_model=VersionResponse)
 async def create_version(
     template_id: uuid.UUID,
@@ -149,7 +217,7 @@ async def create_version(
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> VersionResponse:
-    tmpl = await _get_template(db, ctx, template_id)
+    tmpl = await _get_template(db, ctx, template_id, owner_only=True)
     ver_res = await db.execute(
         select(func.max(PromptVersion.version_number)).where(PromptVersion.template_id == tmpl.id)
     )
@@ -193,11 +261,34 @@ async def run_template(
 ) -> RunResponse:
     tmpl = await _get_template(db, ctx, template_id)
     version = await _get_version(db, tmpl.id, req.version_id)
-    rendered = render_template(version.template_body, req.variables)
-    llm = LLMProviderFactory.create(req.llm_provider)
+    try:
+        context_text, context_vars = await resolve_binding_context(
+            db,
+            tenant_id=ctx.tenant_id,
+            bindings=tmpl.bindings_json,
+            variables=req.variables,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    merged_variables = merge_template_variables(
+        context_text=context_text,
+        context_vars=context_vars,
+        variables=req.variables,
+    )
+    rendered = render_template(version.template_body, merged_variables)
+    user_prompt = rendered
+    if context_text:
+        user_prompt = f"Context:\n{context_text}\n\nTask:\n{rendered}"
+
+    try:
+        llm = LLMProviderFactory.create("openai")
+    except Exception:  # noqa: BLE001
+        llm = LLMProviderFactory.create(req.llm_provider or "heuristic")
+
     output = await llm.complete(
         system=version.system_prompt or "You are a helpful analyst.",
-        messages=[LLMMessage(role="user", content=rendered)],
+        messages=[LLMMessage(role="user", content=user_prompt)],
     )
     keywords = list(req.variables.values()) if req.variables else []
     scores = await judge_output(
@@ -208,7 +299,7 @@ async def run_template(
     payload = ResponsePayload(
         response_type=ResponseType.explanation,
         title=tmpl.name,
-        data={"output": output, "rendered_prompt": rendered},
+        data={"output": output, "rendered_prompt": rendered, "context_preview": context_text[:2000]},
     )
     run = PromptRun(
         template_id=tmpl.id,
@@ -230,6 +321,7 @@ async def run_template(
         output=output,
         eval_scores=scores.model_dump(),
         response=payload.model_dump(),
+        context_preview=context_text[:2000],
     )
 
 
@@ -253,6 +345,7 @@ async def list_runs(
             output=r.output,
             eval_scores=r.eval_scores_json,
             response=r.response_payload_json,
+            context_preview=str((r.response_payload_json or {}).get("data", {}).get("context_preview", "")),
         )
         for r in res.scalars().all()
     ]

@@ -67,6 +67,7 @@ class DataSource(Base):
     metadata_status: Mapped[str] = mapped_column(String(32), default="draft")
     connection_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
     schema_snapshot_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    selected_scope_json: Mapped[dict] = mapped_column(JSONB, default=dict)
     relationships_json: Mapped[list] = mapped_column(JSONB, default=list)
     glossary_json: Mapped[list] = mapped_column(JSONB, default=list)
 

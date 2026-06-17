@@ -28,11 +28,40 @@ async def test_pdf_dashboard_export() -> None:
         payload=ExportPayload(
             title="Ops Dashboard",
             content_type="dashboard",
-            data={"cards": [{"title": "KPI", "summary": "42"}]},
+            data={
+                "cards": [
+                    {
+                        "title": "Customers",
+                        "response": {
+                            "response_type": "data_table",
+                            "data": {
+                                "columns": ["id", "name"],
+                                "rows": [[1, "Alice"], [2, "Bob"]],
+                            },
+                        },
+                    }
+                ]
+            },
         )
     )
     assert result.filename.endswith(".pdf")
     assert result.data.startswith(b"%PDF")
+    assert len(result.data) > 500
+
+
+@pytest.mark.asyncio
+async def test_format_response_text_data_table() -> None:
+    from core.export.response_render import format_response_text
+
+    text = format_response_text(
+        {
+            "response_type": "data_table",
+            "data": {"columns": ["region", "total"], "rows": [["APAC", 100]]},
+        }
+    )
+    assert "region" in text
+    assert "APAC" in text
+    assert "data_table" not in text
 
 
 @pytest.mark.asyncio

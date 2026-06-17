@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+import { afterNextRender, Component, ElementRef, EventEmitter, inject, Injector, Input, Output, ViewChild } from '@angular/core';
 
 import { ResponseRendererComponent } from './response-renderer.component';
 
@@ -8,11 +8,55 @@ import { ResponseRendererComponent } from './response-renderer.component';
   imports: [ResponseRendererComponent],
   template: `
     <div class="dcard">
+      <div class="drag-bar dcard-drag-handle" title="Drag to reposition">⋮⋮</div>
       <div class="head">
-        <h3>{{ title }}</h3>
-        <span class="mode">{{ refreshMode }}</span>
+        <div class="title-wrap">
+          @if (editing) {
+            <input
+              #titleInput
+              class="title-input"
+              [value]="draft"
+              (input)="draft = $any($event.target).value"
+              (mousedown)="$event.stopPropagation()"
+              (blur)="onInputBlur()"
+              (keydown.enter)="commitEdit()"
+              (keydown.escape)="cancelEdit()"
+            />
+          } @else {
+            <h3 [title]="title">{{ title }}</h3>
+            @if (editable) {
+              <button
+                type="button"
+                class="rename-btn"
+                title="Rename card"
+                aria-label="Rename card"
+                (mousedown)="$event.stopPropagation()"
+                (click)="startEdit($event)"
+              >
+                ✎
+              </button>
+            }
+          }
+        </div>
+        <div class="head-actions">
+          <span class="mode">{{ refreshMode }}</span>
+          @if (removable) {
+            <button
+              type="button"
+              class="remove-btn"
+              title="Remove from dashboard"
+              aria-label="Remove from dashboard"
+              (mousedown)="$event.stopPropagation()"
+              (click)="onRemove($event)"
+            >
+              ✕
+            </button>
+          }
+        </div>
       </div>
-      <app-response-renderer [payload]="payload" />
+      <div class="body">
+        <app-response-renderer [payload]="payload" [showTitle]="false" />
+      </div>
     </div>
   `,
   styles: [
@@ -22,22 +66,103 @@ import { ResponseRendererComponent } from './response-renderer.component';
         display: flex;
         flex-direction: column;
         padding: 14px;
+        padding-top: 8px;
         box-sizing: border-box;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
         box-shadow: var(--shadow-sm);
+        overflow: hidden;
       }
+      .drag-bar {
+        align-self: center;
+        width: 36px;
+        height: 18px;
+        margin-bottom: 6px;
+        border-radius: var(--radius-pill);
+        display: grid;
+        place-items: center;
+        color: var(--text-muted);
+        font-size: 11px;
+        letter-spacing: 2px;
+        cursor: move;
+        user-select: none;
+      }
+      .drag-bar:hover { background: var(--surface-3); color: var(--text-2); }
       .head {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 8px;
         margin-bottom: 10px;
+        flex-shrink: 0;
+      }
+      .title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        flex: 1;
+      }
+      .head-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
       }
       h3 {
         margin: 0;
         font-size: var(--text-base);
         color: var(--text);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .title-input {
+        width: 100%;
+        min-width: 0;
+        padding: 4px 8px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border-focus);
+        background: var(--input-bg);
+        color: var(--text);
+        font-size: var(--text-base);
+        font-family: inherit;
+      }
+      .title-input:focus {
+        outline: none;
+        box-shadow: 0 0 0 3px var(--primary-soft);
+      }
+      .rename-btn,
+      .remove-btn {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1;
+        flex-shrink: 0;
+        transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+      }
+      .rename-btn:hover {
+        color: var(--text);
+        border-color: var(--border-strong);
+        background: var(--surface-3);
+      }
+      .remove-btn:hover {
+        background: var(--danger-soft);
+        border-color: var(--danger);
+        color: var(--danger);
       }
       .mode {
         font-size: var(--text-xs);
@@ -49,7 +174,63 @@ import { ResponseRendererComponent } from './response-renderer.component';
   ],
 })
 export class DashboardCardComponent {
+  private readonly injector = inject(Injector);
+
+  @ViewChild('titleInput') titleInput?: ElementRef<HTMLInputElement>;
+
   @Input() title = '';
   @Input() refreshMode = 'snapshot';
+  @Input() removable = false;
+  @Input() editable = false;
   @Input() payload: { response_type: string; title?: string; data: Record<string, unknown> } | null = null;
+  @Output() remove = new EventEmitter<void>();
+  @Output() titleChange = new EventEmitter<string>();
+
+  editing = false;
+  draft = '';
+  private skipBlurCommit = false;
+
+  onRemove(event: Event): void {
+    event.stopPropagation();
+    this.remove.emit();
+  }
+
+  startEdit(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.skipBlurCommit = true;
+    this.editing = true;
+    this.draft = this.title;
+    afterNextRender(
+      () => {
+        const el = this.titleInput?.nativeElement;
+        el?.focus();
+        el?.select();
+        this.skipBlurCommit = false;
+      },
+      { injector: this.injector },
+    );
+  }
+
+  onInputBlur(): void {
+    if (this.skipBlurCommit) return;
+    this.commitEdit();
+  }
+
+  commitEdit(): void {
+    if (!this.editing) return;
+    this.editing = false;
+    const next = this.draft.trim();
+    if (next && next !== this.title) {
+      this.titleChange.emit(next);
+    } else {
+      this.draft = this.title;
+    }
+  }
+
+  cancelEdit(): void {
+    this.skipBlurCommit = false;
+    this.editing = false;
+    this.draft = this.title;
+  }
 }

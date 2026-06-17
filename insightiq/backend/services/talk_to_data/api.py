@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,12 @@ from config.settings import get_settings_resolver
 from core.data.connectors.base import IDBConnector
 from core.data.runner import open_connector
 from core.data.schema import SchemaMetadata
+from core.data.scope import (
+    apply_selected_scope,
+    scope_counts,
+    scope_to_storage,
+)
+from core.data.sql_schema_check import validate_sql_against_schema
 from core.data.validators.readonly import check_readonly_select
 from core.deps import get_db
 from core.llm.base import LLMMessage
@@ -26,6 +33,8 @@ from core.llm.factory import LLMProviderFactory
 from core.models import ChatMessage, Conversation, DataSource
 from core.request_context import RequestContext, require_auth, require_role
 from core.response.classifier import classify_and_format
+from core.response.display import chart_date_sql_rules
+from core.response.formatter import format_explanation
 from core.response.types import ResponsePayload
 from core.types import Role
 
@@ -62,6 +71,16 @@ DIALECT_BY_DB_TYPE = {
 }
 
 GLOSSARY_STATUSES = {"draft", "pending", "approved"}
+ALLOWED_UPLOAD_SUFFIXES = {".csv", ".parquet", ".pq"}
+
+
+class SelectedScope(BaseModel):
+    tables: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class PreviewSchemaRequest(BaseModel):
+    db_type: str
+    connection: dict[str, Any] = Field(default_factory=dict)
 
 
 class RegisterDataSourceRequest(BaseModel):
@@ -69,6 +88,7 @@ class RegisterDataSourceRequest(BaseModel):
     db_type: str
     connection: dict[str, Any]
     description: str = ""
+    selected_scope: SelectedScope | None = None
 
 
 class DataSourceResponse(BaseModel):
@@ -78,6 +98,8 @@ class DataSourceResponse(BaseModel):
     dialect: str
     description: str = ""
     metadata_status: str = "draft"
+    selected_table_count: int = 0
+    selected_column_count: int = 0
 
 
 class DataSourceDetail(BaseModel):
@@ -88,6 +110,7 @@ class DataSourceDetail(BaseModel):
     description: str = ""
     metadata_status: str = "draft"
     schema_metadata: SchemaMetadata
+    selected_scope: SelectedScope
     relationships: list["Relationship"]
     glossary: list["GlossaryEntry"]
 
@@ -95,6 +118,10 @@ class DataSourceDetail(BaseModel):
 class UpdateDataSourceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+
+
+class SaveScopeRequest(BaseModel):
+    selected_scope: SelectedScope
 
 
 class Relationship(BaseModel):
@@ -144,8 +171,77 @@ class AskRequest(BaseModel):
 
 class AskResponse(BaseModel):
     conversation_id: uuid.UUID
-    sql: str
+    sql: str = ""
     response: ResponsePayload
+    clarification: str | None = None
+    awaiting_confirmation: bool = False
+    proposed_sql: str | None = None
+    interpretation: str | None = None
+
+
+@dataclass
+class SqlProposal:
+    interpretation: str
+    sql: str
+    original_question: str = ""
+
+
+@dataclass
+class SqlResolution:
+    sql: str | None = None
+    clarification: str | None = None
+    proposal: SqlProposal | None = None
+
+
+@router.post("/sources/preview-schema", response_model=SchemaMetadata)
+async def preview_schema(
+    req: PreviewSchemaRequest,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+) -> SchemaMetadata:
+    if req.db_type not in SUPPORTED_DB_TYPES:
+        raise HTTPException(status_code=400, detail=f"unsupported db_type: {req.db_type}")
+    if req.db_type == "duckdb_files":
+        raise HTTPException(status_code=400, detail="use /sources/preview-schema/upload for file uploads")
+
+    try:
+        async with open_connector(req.db_type, req.connection) as connector:
+            if not await connector.test_connection():
+                raise HTTPException(status_code=400, detail="connection failed")
+            return await connector.introspect_schema()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - report failure rather than 500
+        raise HTTPException(status_code=400, detail=f"could not introspect schema: {exc}") from exc
+
+
+@router.post("/sources/preview-schema/upload", response_model=SchemaMetadata)
+async def preview_schema_upload(
+    table_name: str = Form("data"),
+    file: UploadFile = File(...),
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+) -> SchemaMetadata:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported file type '{suffix or 'unknown'}'. Allowed: CSV, Parquet.",
+        )
+
+    logical_table = _sanitize_identifier(table_name) or "data"
+    settings = get_settings_resolver().resolve()
+    temp_dir = Path(settings.storage.upload_dir) / str(ctx.tenant_id) / "_preview"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_dir / f"{uuid.uuid4()}{suffix}"
+    try:
+        with temp_path.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+        connection = {"files": {logical_table: str(temp_path)}}
+        async with open_connector("duckdb_files", connection) as connector:
+            return await connector.introspect_schema()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"could not read file: {exc}") from exc
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @router.post("/sources", response_model=DataSourceResponse)
@@ -162,6 +258,14 @@ async def register_source(
             raise HTTPException(status_code=400, detail="connection failed")
         schema = await connector.introspect_schema()
 
+    try:
+        scope_payload = scope_to_storage(
+            req.selected_scope.model_dump() if req.selected_scope else None,
+            schema,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     ds = DataSource(
         tenant_id=ctx.tenant_id,
         name=req.name,
@@ -170,6 +274,7 @@ async def register_source(
         description=req.description,
         connection_config_json=req.connection,
         schema_snapshot_json=schema.model_dump(),
+        selected_scope_json=scope_payload,
         relationships_json=[r.model_dump() for r in schema.relationships],
     )
     db.add(ds)
@@ -187,14 +292,12 @@ async def list_sources(
     return [_to_response(ds) for ds in res.scalars().all()]
 
 
-ALLOWED_UPLOAD_SUFFIXES = {".csv", ".parquet", ".pq"}
-
-
 @router.post("/sources/upload", response_model=DataSourceResponse)
 async def upload_file_source(
     name: str = Form(...),
     table_name: str = Form("data"),
     description: str = Form(""),
+    selected_scope_json: str = Form(""),
     file: UploadFile = File(...),
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
@@ -226,6 +329,17 @@ async def upload_file_source(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"could not read file: {exc}") from exc
 
+    raw_scope: dict[str, Any] | None = None
+    if selected_scope_json.strip():
+        try:
+            raw_scope = json.loads(selected_scope_json)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="selected_scope_json must be valid JSON") from exc
+    try:
+        scope_payload = scope_to_storage(raw_scope, schema)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     ds = DataSource(
         id=source_id,
         tenant_id=ctx.tenant_id,
@@ -235,6 +349,7 @@ async def upload_file_source(
         description=description,
         connection_config_json=connection,
         schema_snapshot_json=schema.model_dump(),
+        selected_scope_json=scope_payload,
         relationships_json=[r.model_dump() for r in schema.relationships],
     )
     db.add(ds)
@@ -250,7 +365,8 @@ async def get_source(
     db: AsyncSession = Depends(get_db),
 ) -> DataSourceDetail:
     ds = await _get_datasource(db, ctx.tenant_id, datasource_id)
-    schema = SchemaMetadata.model_validate(ds.schema_snapshot_json or {"tables": []})
+    schema = _full_schema(ds)
+    selected_scope = SelectedScope.model_validate(ds.selected_scope_json or {"tables": {}})
     return DataSourceDetail(
         id=ds.id,
         name=ds.name,
@@ -259,6 +375,7 @@ async def get_source(
         description=ds.description or "",
         metadata_status=ds.metadata_status or "draft",
         schema_metadata=schema,
+        selected_scope=selected_scope,
         relationships=[Relationship.model_validate(r) for r in (ds.relationships_json or [])],
         glossary=_load_glossary(ds),
     )
@@ -296,6 +413,24 @@ async def test_source(
     if not ok:
         raise HTTPException(status_code=400, detail="connection failed")
     return {"ok": True}
+
+
+@router.put("/sources/{datasource_id}/scope", response_model=SelectedScope)
+async def save_scope(
+    datasource_id: uuid.UUID,
+    req: SaveScopeRequest,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> SelectedScope:
+    ds = await _get_datasource(db, ctx.tenant_id, datasource_id)
+    schema = _full_schema(ds)
+    try:
+        scope_payload = scope_to_storage(req.selected_scope.model_dump(), schema)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ds.selected_scope_json = scope_payload
+    await db.commit()
+    return SelectedScope.model_validate(scope_payload)
 
 
 @router.delete("/sources/{datasource_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -521,7 +656,7 @@ async def generate_description(
     db: AsyncSession = Depends(get_db),
 ) -> DescriptionResponse:
     ds = await _get_datasource(db, ctx.tenant_id, datasource_id)
-    schema = SchemaMetadata.model_validate(ds.schema_snapshot_json or {"tables": []})
+    schema = _scoped_schema(ds)
     req = req or GenerateDescriptionRequest()
     description = await _generate_description(ds.name, ds.db_type, schema, req.context)
     return DescriptionResponse(description=description)
@@ -537,23 +672,233 @@ async def ask(
     conversation_id = req.conversation_id or uuid.uuid4()
     await _ensure_conversation(db, ctx, conversation_id, ds.id, req.question)
 
-    schema = SchemaMetadata.model_validate(ds.schema_snapshot_json or {"tables": []})
-    relationships = [Relationship.model_validate(r) for r in (ds.relationships_json or [])]
-    glossary = [e for e in _load_glossary(ds) if e.status == "approved"]
-    system_prompt = _build_sql_system_prompt(ds.dialect, schema, relationships, glossary)
+    schema = _scoped_schema(ds)
+    relationships = [
+        Relationship.model_validate(r)
+        for r in (ds.relationships_json or [])
+        if _relationship_in_schema(r, schema)
+    ]
+    glossary = [
+        e
+        for e in _load_glossary(ds)
+        if e.status == "approved" and _glossary_in_schema(e, schema)
+    ]
+    system_prompt = _build_sql_system_prompt(
+        ds.dialect, schema, relationships, glossary, question=req.question
+    )
 
     async with open_connector(ds.db_type, ds.connection_config_json) as connector:
-        sql, validation_error = await _generate_sql_with_retries(
-            system_prompt,
-            req.question,
-            connector,
-            max_retries=_MAX_SQL_RETRIES,
-        )
-        if validation_error:
-            raise HTTPException(status_code=400, detail=validation_error)
-        result = await connector.execute_query(sql)
+        if req.conversation_id and _is_affirmative(req.question):
+            pending = await _get_pending_proposal(db, ctx, req.conversation_id)
+            if pending:
+                return await _execute_confirmed_proposal(
+                    db,
+                    ctx=ctx,
+                    ds=ds,
+                    schema=schema,
+                    connector=connector,
+                    conversation_id=req.conversation_id,
+                    question=req.question,
+                    pending=pending,
+                )
 
-    response = classify_and_format(result, question=req.question)
+        if req.conversation_id and _is_negative(req.question):
+            pending = await _get_pending_proposal(db, ctx, req.conversation_id)
+            if pending:
+                message = "No problem — rephrase your question with the table and metric you want."
+                response = format_explanation(output=message, title=pending.get("original_question") or req.question)
+                await _persist_ask_messages(
+                    db,
+                    ctx=ctx,
+                    conversation_id=req.conversation_id,
+                    datasource_id=ds.id,
+                    question=req.question,
+                    sql="",
+                    response=response,
+                    awaiting_confirmation=False,
+                )
+                return AskResponse(
+                    conversation_id=req.conversation_id,
+                    sql="",
+                    response=response,
+                    clarification=message,
+                )
+
+        resolution = await _resolve_sql_or_clarify(
+            dialect=ds.dialect,
+            schema=schema,
+            system_prompt=system_prompt,
+            question=req.question,
+            connector=connector,
+        )
+
+        if resolution.proposal:
+            return await _return_sql_proposal(
+                db,
+                ctx=ctx,
+                ds=ds,
+                connector=connector,
+                schema=schema,
+                conversation_id=conversation_id,
+                question=req.question,
+                proposal=resolution.proposal,
+            )
+
+        if resolution.clarification:
+            proposal = await _build_sql_proposal(
+                dialect=ds.dialect,
+                schema=schema,
+                question=req.question,
+                connector=connector,
+                context=resolution.clarification,
+            )
+            if proposal:
+                return await _return_sql_proposal(
+                    db,
+                    ctx=ctx,
+                    ds=ds,
+                    connector=connector,
+                    schema=schema,
+                    conversation_id=conversation_id,
+                    question=req.question,
+                    proposal=proposal,
+                )
+            response = format_explanation(output=resolution.clarification, title=req.question)
+            await _persist_ask_messages(
+                db,
+                ctx=ctx,
+                conversation_id=conversation_id,
+                datasource_id=ds.id,
+                question=req.question,
+                sql="",
+                response=response,
+            )
+            return AskResponse(
+                conversation_id=conversation_id,
+                sql="",
+                response=response,
+                clarification=resolution.clarification,
+            )
+
+        sql = resolution.sql or ""
+        if not sql:
+            proposal = await _build_sql_proposal(
+                dialect=ds.dialect,
+                schema=schema,
+                question=req.question,
+                connector=connector,
+            )
+            if proposal:
+                return await _return_sql_proposal(
+                    db,
+                    ctx=ctx,
+                    ds=ds,
+                    connector=connector,
+                    schema=schema,
+                    conversation_id=conversation_id,
+                    question=req.question,
+                    proposal=proposal,
+                )
+            message = (
+                "I couldn't build a valid query from that question using the available schema. "
+                "Try naming the table or metric you want."
+            )
+            response = format_explanation(output=message, title=req.question)
+            await _persist_ask_messages(
+                db,
+                ctx=ctx,
+                conversation_id=conversation_id,
+                datasource_id=ds.id,
+                question=req.question,
+                sql="",
+                response=response,
+            )
+            return AskResponse(conversation_id=conversation_id, sql="", response=response, clarification=message)
+
+        confirm = await _maybe_require_confirmation(req.question, sql, schema, ds.dialect)
+        if confirm:
+            return await _return_sql_proposal(
+                db,
+                ctx=ctx,
+                ds=ds,
+                connector=connector,
+                schema=schema,
+                conversation_id=conversation_id,
+                question=req.question,
+                proposal=confirm,
+            )
+
+        try:
+            result = await connector.execute_query(sql)
+        except Exception as exc:  # noqa: BLE001 - return proposal or clarification instead of 500
+            proposal = await _build_sql_proposal(
+                dialect=ds.dialect,
+                schema=schema,
+                question=req.question,
+                connector=connector,
+                context=str(exc),
+                draft_sql=sql,
+            )
+            if proposal:
+                return await _return_sql_proposal(
+                    db,
+                    ctx=ctx,
+                    ds=ds,
+                    connector=connector,
+                    schema=schema,
+                    conversation_id=conversation_id,
+                    question=req.question,
+                    proposal=proposal,
+                )
+            message = await _execution_failure_clarification(req.question, schema, sql, str(exc))
+            response = format_explanation(output=message, title=req.question)
+            await _persist_ask_messages(
+                db,
+                ctx=ctx,
+                conversation_id=conversation_id,
+                datasource_id=ds.id,
+                question=req.question,
+                sql=sql,
+                response=response,
+            )
+            return AskResponse(conversation_id=conversation_id, sql=sql, response=response, clarification=message)
+
+        response = classify_and_format(result, question=req.question)
+        await _persist_ask_messages(
+            db,
+            ctx=ctx,
+            conversation_id=conversation_id,
+            datasource_id=ds.id,
+            question=req.question,
+            sql=sql,
+            response=response,
+        )
+        return AskResponse(conversation_id=conversation_id, sql=sql, response=response)
+
+
+async def _persist_ask_messages(
+    db: AsyncSession,
+    *,
+    ctx: RequestContext,
+    conversation_id: uuid.UUID,
+    datasource_id: uuid.UUID,
+    question: str,
+    sql: str,
+    response: ResponsePayload,
+    awaiting_confirmation: bool = False,
+    pending_sql: str | None = None,
+    pending_interpretation: str | None = None,
+    pending_original_question: str | None = None,
+) -> None:
+    assistant_meta: dict[str, Any] = {
+        "response": response.model_dump(mode="json"),
+        "sql": sql or None,
+        "awaiting_confirmation": awaiting_confirmation,
+    }
+    if awaiting_confirmation and pending_sql:
+        assistant_meta["pending_sql"] = pending_sql
+        assistant_meta["pending_interpretation"] = pending_interpretation or ""
+        assistant_meta["pending_original_question"] = pending_original_question or question
 
     db.add(
         ChatMessage(
@@ -561,8 +906,8 @@ async def ask(
             user_id=ctx.user_id,
             conversation_id=conversation_id,
             role="user",
-            content=req.question,
-            metadata_json={"datasource_id": str(ds.id)},
+            content=question,
+            metadata_json={"datasource_id": str(datasource_id)},
         )
     )
     db.add(
@@ -571,12 +916,11 @@ async def ask(
             user_id=ctx.user_id,
             conversation_id=conversation_id,
             role="assistant",
-            content=sql,
-            metadata_json={"response": response.model_dump(mode="json")},
+            content=sql or str(response.data.get("output", "")),
+            metadata_json=assistant_meta,
         )
     )
     await db.commit()
-    return AskResponse(conversation_id=conversation_id, sql=sql, response=response)
 
 
 def _sanitize_identifier(value: str) -> str:
@@ -588,7 +932,31 @@ def _sanitize_identifier(value: str) -> str:
     return cleaned[:63]
 
 
+def _full_schema(ds: DataSource) -> SchemaMetadata:
+    return SchemaMetadata.model_validate(ds.schema_snapshot_json or {"tables": []})
+
+
+def _scoped_schema(ds: DataSource) -> SchemaMetadata:
+    return apply_selected_scope(_full_schema(ds), ds.selected_scope_json or None)
+
+
+def _relationship_in_schema(raw: dict[str, Any] | Relationship, schema: SchemaMetadata) -> bool:
+    rel = raw if isinstance(raw, Relationship) else Relationship.model_validate(raw)
+    cols = {(t.name, c.name) for t in schema.tables for c in t.columns}
+    return (rel.from_table, rel.from_column) in cols and (rel.to_table, rel.to_column) in cols
+
+
+def _glossary_in_schema(entry: GlossaryEntry, schema: SchemaMetadata) -> bool:
+    table = schema.tables and next((t for t in schema.tables if t.name == entry.table), None)
+    if table is None:
+        return False
+    if entry.column is None:
+        return True
+    return any(c.name == entry.column for c in table.columns)
+
+
 def _to_response(ds: DataSource) -> DataSourceResponse:
+    table_count, column_count = scope_counts(ds.schema_snapshot_json, ds.selected_scope_json)
     return DataSourceResponse(
         id=ds.id,
         name=ds.name,
@@ -596,6 +964,8 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
         dialect=ds.dialect,
         description=ds.description or "",
         metadata_status=ds.metadata_status or "draft",
+        selected_table_count=table_count,
+        selected_column_count=column_count,
     )
 
 
@@ -654,6 +1024,8 @@ def _build_sql_system_prompt(
     schema: SchemaMetadata,
     relationships: list[Relationship],
     glossary: list[GlossaryEntry],
+    *,
+    question: str = "",
 ) -> str:
     table_lines = []
     for table in schema.tables:
@@ -680,12 +1052,627 @@ def _build_sql_system_prompt(
         f"{_SQL_GUARDRAILS}\n\n"
         "Query rules:\n"
         "- Output ONLY the SQL text. No markdown fences, no explanation, no trailing semicolon.\n"
+        "- Use ONLY tables and columns listed in the schema below. Never invent table or column names.\n"
+        "- If the question refers to a business term not in the schema (e.g. 'cost' when only 'amount' exists), "
+        "map to the closest available column or ask the user.\n"
+        "- If the question is ambiguous or missing required detail (metric, date range, table, filter), "
+        "respond with exactly one line: CLARIFY: <your best guess at what the user wants, referencing schema columns>\n"
         "- Prefer explicit column lists over SELECT * when aggregating or charting.\n"
         "- Honor requested row limits (e.g. top 10 → LIMIT 10).\n"
-        "- Use JOINs when relationships are provided.\n\n"
+        "- Use JOINs when relationships are provided.\n"
+        f"{chart_date_sql_rules(dialect, question)}\n\n"
         "Schema:\n" + ("\n".join(table_lines) or "- table: unknown") + "\n\n"
         "Relationships:\n" + ("\n".join(rel_lines) or "- none") + "\n\n"
         "Glossary:\n" + ("\n".join(glossary_lines) or "- none")
+    )
+
+
+_AFFIRMATIVE = re.compile(
+    r"^(?:yes|y|yeah|yep|yup|correct|right|that's right|that is right|run it|go ahead|"
+    r"confirm|confirmed|ok|okay|sure|do it|proceed|sounds good|please do|exactly)\.?$",
+    re.IGNORECASE,
+)
+_NEGATIVE = re.compile(
+    r"^(?:no|n|nope|cancel|wrong|not that|try again|don't|do not)\.?$",
+    re.IGNORECASE,
+)
+
+
+def _is_affirmative(text: str) -> bool:
+    return bool(_AFFIRMATIVE.match(text.strip()))
+
+
+def _is_negative(text: str) -> bool:
+    return bool(_NEGATIVE.match(text.strip()))
+
+
+async def _get_pending_proposal(
+    db: AsyncSession,
+    ctx: RequestContext,
+    conversation_id: uuid.UUID,
+) -> dict[str, str] | None:
+    res = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.tenant_id == ctx.tenant_id,
+            ChatMessage.role == "assistant",
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    msg = res.scalar_one_or_none()
+    if msg is None:
+        return None
+    meta = msg.metadata_json or {}
+    if meta.get("awaiting_confirmation") and meta.get("pending_sql"):
+        return {
+            "sql": str(meta["pending_sql"]),
+            "interpretation": str(meta.get("pending_interpretation") or ""),
+            "original_question": str(meta.get("pending_original_question") or ""),
+        }
+    return None
+
+
+async def _validate_sql_ready(
+    sql: str,
+    schema: SchemaMetadata,
+    connector: IDBConnector,
+) -> str | None:
+    guard = check_readonly_select(sql)
+    if not guard.ok:
+        return guard.error or "read-only guard rejected query"
+    schema_check = validate_sql_against_schema(sql, schema)
+    if not schema_check.ok:
+        return schema_check.error or "schema check failed"
+    validation = await connector.validate_sql(sql)
+    if not validation.ok:
+        return validation.error or "invalid SQL"
+    return None
+
+
+def _proposal_message(proposal: SqlProposal) -> str:
+    return (
+        f"I think you're asking for: {proposal.interpretation}\n\n"
+        "Does that look right? Reply yes to run the query, or no to rephrase."
+    )
+
+
+async def _return_sql_proposal(
+    db: AsyncSession,
+    *,
+    ctx: RequestContext,
+    ds: DataSource,
+    connector: IDBConnector,
+    schema: SchemaMetadata,
+    conversation_id: uuid.UUID,
+    question: str,
+    proposal: SqlProposal,
+) -> AskResponse:
+    proposal.original_question = proposal.original_question or question
+    err = await _validate_sql_ready(proposal.sql, schema, connector)
+    if err:
+        rebuilt = await _build_sql_proposal(
+            dialect=ds.dialect,
+            schema=schema,
+            question=proposal.original_question,
+            connector=connector,
+            context=err,
+            draft_sql=proposal.sql,
+        )
+        if rebuilt:
+            proposal = rebuilt
+        else:
+            response = format_explanation(output=f"I couldn't validate a query yet: {err}", title=question)
+            await _persist_ask_messages(
+                db,
+                ctx=ctx,
+                conversation_id=conversation_id,
+                datasource_id=ds.id,
+                question=question,
+                sql="",
+                response=response,
+            )
+            return AskResponse(
+                conversation_id=conversation_id,
+                sql="",
+                response=response,
+                clarification=str(err),
+            )
+
+    message = _proposal_message(proposal)
+    response = format_explanation(output=message, title=question)
+    response.data["interpretation"] = proposal.interpretation
+    response.data["proposed_sql"] = proposal.sql
+    response.data["awaiting_confirmation"] = True
+
+    await _persist_ask_messages(
+        db,
+        ctx=ctx,
+        conversation_id=conversation_id,
+        datasource_id=ds.id,
+        question=question,
+        sql="",
+        response=response,
+        awaiting_confirmation=True,
+        pending_sql=proposal.sql,
+        pending_interpretation=proposal.interpretation,
+        pending_original_question=proposal.original_question,
+    )
+    return AskResponse(
+        conversation_id=conversation_id,
+        sql="",
+        response=response,
+        awaiting_confirmation=True,
+        proposed_sql=proposal.sql,
+        interpretation=proposal.interpretation,
+    )
+
+
+async def _execute_confirmed_proposal(
+    db: AsyncSession,
+    *,
+    ctx: RequestContext,
+    ds: DataSource,
+    schema: SchemaMetadata,
+    connector: IDBConnector,
+    conversation_id: uuid.UUID,
+    question: str,
+    pending: dict[str, str],
+) -> AskResponse:
+    sql = pending["sql"]
+    original_question = pending.get("original_question") or question
+    err = await _validate_sql_ready(sql, schema, connector)
+    if err:
+        message = f"I couldn't run that query: {err}. Please ask again with more detail."
+        response = format_explanation(output=message, title=original_question)
+        await _persist_ask_messages(
+            db,
+            ctx=ctx,
+            conversation_id=conversation_id,
+            datasource_id=ds.id,
+            question=question,
+            sql=sql,
+            response=response,
+            awaiting_confirmation=False,
+        )
+        return AskResponse(conversation_id=conversation_id, sql=sql, response=response, clarification=message)
+
+    try:
+        result = await connector.execute_query(sql)
+    except Exception as exc:  # noqa: BLE001
+        message = await _execution_failure_clarification(original_question, schema, sql, str(exc))
+        response = format_explanation(output=message, title=original_question)
+        await _persist_ask_messages(
+            db,
+            ctx=ctx,
+            conversation_id=conversation_id,
+            datasource_id=ds.id,
+            question=question,
+            sql=sql,
+            response=response,
+        )
+        return AskResponse(conversation_id=conversation_id, sql=sql, response=response, clarification=message)
+
+    response = classify_and_format(result, question=original_question)
+    await _persist_ask_messages(
+        db,
+        ctx=ctx,
+        conversation_id=conversation_id,
+        datasource_id=ds.id,
+        question=question,
+        sql=sql,
+        response=response,
+        awaiting_confirmation=False,
+    )
+    return AskResponse(conversation_id=conversation_id, sql=sql, response=response)
+
+
+async def _build_sql_proposal(
+    *,
+    dialect: str,
+    schema: SchemaMetadata,
+    question: str,
+    connector: IDBConnector,
+    context: str = "",
+    draft_sql: str = "",
+) -> SqlProposal | None:
+    schema_lines = []
+    for table in schema.tables:
+        cols = ", ".join(f"{c.name} ({c.data_type})" for c in table.columns)
+        schema_lines.append(f"{table.name}: {cols}")
+
+    system = (
+        f"You are a {dialect} analyst. Given a user question and schema metadata, infer the most likely intent "
+        "and write ONE read-only SELECT using ONLY listed tables and columns. "
+        "Map business terms to the closest schema columns (e.g. cost/revenue → amount). "
+        f"{chart_date_sql_rules(dialect, question)} "
+        "Respond ONLY with JSON (no markdown): "
+        '{"interpretation": "plain English summary of what you will query", "sql": "SELECT ..."}'
+    )
+    user = (
+        f"User question: {question}\n"
+        f"Schema:\n" + "\n".join(schema_lines) + "\n"
+        + (f"Context: {context}\n" if context else "")
+        + (f"Draft SQL (fix if needed): {draft_sql}\n" if draft_sql else "")
+    )
+
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
+        proposal = _parse_proposal_json(raw, original_question=question)
+        if proposal and await _validate_sql_ready(proposal.sql, schema, connector) is None:
+            return proposal
+    except Exception:  # noqa: BLE001
+        pass
+
+    if draft_sql:
+        err = await _validate_sql_ready(draft_sql, schema, connector)
+        if err is None:
+            interpretation = context or f"Run a query to answer: {question}"
+            return SqlProposal(interpretation=interpretation, sql=draft_sql, original_question=question)
+    return None
+
+
+def _parse_proposal_json(raw: str, *, original_question: str) -> SqlProposal | None:
+    text = raw.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.lstrip().lower().startswith("json"):
+                text = text.lstrip()[4:]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+    interpretation = str(payload.get("interpretation", "")).strip()
+    sql = _extract_sql(str(payload.get("sql", "")))
+    if interpretation and sql:
+        return SqlProposal(interpretation=interpretation, sql=sql, original_question=original_question)
+    return None
+
+
+async def _maybe_require_confirmation(
+    question: str,
+    sql: str,
+    schema: SchemaMetadata,
+    dialect: str,
+) -> SqlProposal | None:
+    """Ask for confirmation when the question uses terms that don't literally match schema columns."""
+    schema_terms = {t.name.lower() for t in schema.tables}
+    schema_terms.update(c.name.lower() for t in schema.tables for c in t.columns)
+    question_tokens = {tok.lower() for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", question)}
+    fuzzy_terms = question_tokens - schema_terms - {
+        "show",
+        "the",
+        "a",
+        "an",
+        "as",
+        "by",
+        "for",
+        "from",
+        "in",
+        "on",
+        "to",
+        "and",
+        "or",
+        "all",
+        "top",
+        "month",
+        "monthly",
+        "week",
+        "daily",
+        "line",
+        "bar",
+        "chart",
+        "graph",
+        "plot",
+        "trend",
+        "list",
+        "count",
+        "sum",
+        "average",
+        "total",
+        "data",
+        "table",
+        "rows",
+        "me",
+        "my",
+        "what",
+        "how",
+        "many",
+        "each",
+        "per",
+        "over",
+        "time",
+    }
+    if not fuzzy_terms:
+        return None
+
+    schema_lines = []
+    for table in schema.tables:
+        cols = ", ".join(c.name for c in table.columns)
+        schema_lines.append(f"{table.name}: {cols}")
+    system = (
+        f"You decide if a {dialect} query should be confirmed with the user before running. "
+        "If the question uses business terms that were mapped to schema columns, confirmation is needed. "
+        "Respond ONLY with JSON: "
+        '{"needs_confirmation": true/false, "interpretation": "what the query will return"}'
+    )
+    user = (
+        f"Question: {question}\n"
+        f"Ambiguous terms: {', '.join(sorted(fuzzy_terms))}\n"
+        f"Schema:\n" + "\n".join(schema_lines) + f"\nSQL:\n{sql}"
+    )
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
+        payload = _parse_json_object(raw)
+        if payload and payload.get("needs_confirmation"):
+            interpretation = str(payload.get("interpretation", "")).strip()
+            if interpretation:
+                return SqlProposal(interpretation=interpretation, sql=sql, original_question=question)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if fuzzy_terms:
+        mapped = ", ".join(sorted(fuzzy_terms))
+        return SqlProposal(
+            interpretation=f"Answer your question using available schema columns (mapped from: {mapped})",
+            sql=sql,
+            original_question=question,
+        )
+    return None
+
+
+def _parse_json_object(raw: str) -> dict[str, Any] | None:
+    text = raw.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.lstrip().lower().startswith("json"):
+                text = text.lstrip()[4:]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _resolve_sql_or_clarify(
+    *,
+    dialect: str,
+    schema: SchemaMetadata,
+    system_prompt: str,
+    question: str,
+    connector: IDBConnector,
+    max_retries: int = _MAX_SQL_RETRIES,
+) -> SqlResolution:
+    """Generate SQL, verify against schema metadata, validate with EXPLAIN, or ask the user."""
+    messages = [LLMMessage(role="user", content=question)]
+    last_error = ""
+    last_sql = ""
+
+    for attempt in range(max_retries):
+        raw = await _complete_sql_llm_raw(system_prompt, messages)
+        sql, clarify = _parse_llm_sql_response(raw)
+        if clarify:
+            proposal = await _build_sql_proposal(
+                dialect=dialect,
+                schema=schema,
+                question=question,
+                connector=connector,
+                context=clarify,
+                draft_sql=last_sql,
+            )
+            if proposal:
+                return SqlResolution(proposal=proposal)
+            return SqlResolution(clarification=clarify)
+        if not sql:
+            last_error = "model did not return SQL"
+            messages.append(LLMMessage(role="assistant", content=raw))
+            messages.append(LLMMessage(role="user", content="Return a single read-only SELECT or CLARIFY: ..."))
+            continue
+
+        last_sql = sql
+        guard = check_readonly_select(sql)
+        if not guard.ok:
+            last_error = guard.error or "read-only guard rejected query"
+            if attempt >= max_retries - 1:
+                break
+            messages.extend(_retry_messages(sql, last_error))
+            continue
+
+        schema_check = validate_sql_against_schema(sql, schema)
+        if not schema_check.ok:
+            last_error = schema_check.error or "schema check failed"
+            if attempt >= max_retries - 1:
+                break
+            messages.extend(_retry_messages(sql, f"Schema check failed: {last_error}"))
+            continue
+
+        verified = await _verify_sql_with_llm(
+            dialect=dialect,
+            schema=schema,
+            question=question,
+            sql=sql,
+        )
+        if verified.proposal:
+            return verified
+        if verified.clarification:
+            proposal = await _build_sql_proposal(
+                dialect=dialect,
+                schema=schema,
+                question=question,
+                connector=connector,
+                context=verified.clarification,
+                draft_sql=sql,
+            )
+            if proposal:
+                return SqlResolution(proposal=proposal)
+            return verified
+        if verified.sql:
+            sql = verified.sql
+
+        validation = await connector.validate_sql(sql)
+        if validation.ok:
+            return SqlResolution(sql=sql)
+
+        last_error = validation.error or "invalid SQL"
+        if attempt >= max_retries - 1:
+            break
+        messages.extend(_retry_messages(sql, f"Database validation failed: {last_error}"))
+
+    clarification = await _failure_clarification(question, schema, last_error)
+    proposal = await _build_sql_proposal(
+        dialect=dialect,
+        schema=schema,
+        question=question,
+        connector=connector,
+        context=last_error,
+        draft_sql=last_sql,
+    )
+    if proposal:
+        return SqlResolution(proposal=proposal)
+    return SqlResolution(clarification=clarification)
+
+
+def _retry_messages(sql: str, error: str) -> list[LLMMessage]:
+    return [
+        LLMMessage(role="assistant", content=sql),
+        LLMMessage(
+            role="user",
+            content=(
+                f"{error}. "
+                "Fix the query using ONLY tables and columns from the schema, "
+                "or respond CLARIFY: <question for the user>."
+            ),
+        ),
+    ]
+
+
+async def _verify_sql_with_llm(
+    *,
+    dialect: str,
+    schema: SchemaMetadata,
+    question: str,
+    sql: str,
+) -> SqlResolution:
+    """LLM pass to verify SQL matches schema metadata before execution."""
+    schema_lines = []
+    for table in schema.tables:
+        cols = ", ".join(f"{c.name} ({c.data_type})" for c in table.columns)
+        schema_lines.append(f"{table.name}: {cols}")
+
+    system = (
+        f"You verify {dialect} SQL against the schema before it runs. "
+        "Respond ONLY with JSON (no markdown): "
+        '{"action":"run","sql":"..."} if the query is correct (you may fix minor issues), '
+        '"action":"fix","sql":"..."} if it must be corrected to use only schema objects, '
+        '"action":"propose","interpretation":"...","sql":"..."} if the user should confirm your interpretation, '
+        'or {"action":"clarify","message":"..."} if the user must provide missing detail}.'
+    )
+    user = (
+        f"User question: {question}\n\n"
+        f"Schema:\n" + "\n".join(schema_lines) + "\n\n"
+        f"Proposed SQL:\n{sql}"
+    )
+
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
+        parsed = _parse_verify_json(raw)
+        if parsed is not None:
+            return parsed
+    except Exception:  # noqa: BLE001 - fall back to static schema check
+        pass
+
+    return SqlResolution(sql=sql)
+
+
+def _parse_verify_json(raw: str) -> SqlResolution | None:
+    text = raw.strip()
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 2:
+            text = parts[1]
+            if text.lstrip().lower().startswith("json"):
+                text = text.lstrip()[4:]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+
+    action = str(payload.get("action", "")).lower()
+    if action == "clarify":
+        message = str(payload.get("message", "")).strip()
+        return SqlResolution(clarification=message) if message else None
+    if action == "propose":
+        interpretation = str(payload.get("interpretation", "")).strip()
+        sql = _extract_sql(str(payload.get("sql", "")))
+        if interpretation and sql:
+            return SqlResolution(proposal=SqlProposal(interpretation=interpretation, sql=sql))
+        return None
+    if action in {"run", "fix"}:
+        sql = _extract_sql(str(payload.get("sql", "")))
+        return SqlResolution(sql=sql) if sql else None
+    return None
+
+
+async def _failure_clarification(question: str, schema: SchemaMetadata, error: str) -> str:
+    tables = ", ".join(t.name for t in schema.tables[:8]) or "none"
+    prompt = (
+        "The user asked a data question but the query could not be validated. "
+        "Write one or two friendly sentences asking the user for the missing detail "
+        "or suggesting how to rephrase. Do not mention internal errors or stack traces."
+    )
+    user = f"Question: {question}\nAvailable tables: {tables}\nIssue: {error}"
+    try:
+        llm = LLMProviderFactory.create("openai")
+        text = await llm.complete(system=prompt, messages=[LLMMessage(role="user", content=user)])
+        cleaned = text.strip()
+        if cleaned:
+            return cleaned
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        "I couldn't build a valid query from that question with the current schema. "
+        f"Available tables: {tables}. "
+        "Which table and metric should I use, and over what time range?"
+    )
+
+
+async def _execution_failure_clarification(
+    question: str,
+    schema: SchemaMetadata,
+    sql: str,
+    error: str,
+) -> str:
+    return await _failure_clarification(
+        question,
+        schema,
+        f"Query failed at execution time. SQL: {sql}. Error: {error}",
     )
 
 
@@ -694,67 +1681,52 @@ async def _generate_sql_with_retries(
     question: str,
     connector: IDBConnector,
     *,
+    schema: SchemaMetadata | None = None,
+    dialect: str = "postgres",
     max_retries: int = _MAX_SQL_RETRIES,
 ) -> tuple[str, str | None]:
-    """Generate SQL via LLM, enforce read-only guardrails, validate with EXPLAIN, retry up to max_retries."""
-    messages = [LLMMessage(role="user", content=question)]
-    sql = ""
-
-    for attempt in range(max_retries):
-        sql = await _complete_sql_llm(system_prompt, messages)
-        guard = check_readonly_select(sql)
-        if not guard.ok:
-            err = guard.error or "read-only guard rejected query"
-            if attempt >= max_retries - 1:
-                return sql, err
-            messages.extend([
-                LLMMessage(role="assistant", content=sql),
-                LLMMessage(
-                    role="user",
-                    content=(
-                        f"Rejected by read-only guard: {err}. "
-                        "Output a corrected single SELECT statement only. "
-                        "No INSERT, UPDATE, DELETE, DROP, TRUNCATE, MERGE, CALL, or ALTER."
-                    ),
-                ),
-            ])
-            continue
-
-        validation = await connector.validate_sql(sql)
-        if validation.ok:
-            return sql, None
-
-        err = validation.error or "invalid SQL"
-        if attempt >= max_retries - 1:
-            return sql, err
-        messages.extend([
-            LLMMessage(role="assistant", content=sql),
-            LLMMessage(
-                role="user",
-                content=(
-                    f"Validation failed: {err}. "
-                    "Output a corrected read-only SELECT only. "
-                    "No destructive or mutating SQL."
-                ),
-            ),
-        ])
-
-    return sql, "could not generate valid read-only SQL"
+    """Generate SQL via LLM, enforce guardrails, validate, retry. Used by tests/helpers."""
+    resolution = await _resolve_sql_or_clarify(
+        dialect=dialect,
+        schema=schema or SchemaMetadata(),
+        system_prompt=system_prompt,
+        question=question,
+        connector=connector,
+        max_retries=max_retries,
+    )
+    if resolution.clarification:
+        return "", resolution.clarification
+    return resolution.sql or "", "could not generate valid read-only SQL"
 
 
-async def _complete_sql_llm(system_prompt: str, messages: list[LLMMessage]) -> str:
+async def _complete_sql_llm_raw(system_prompt: str, messages: list[LLMMessage]) -> str:
     """Call OpenAI for NL→SQL; fall back to heuristic when LLM is unavailable."""
     try:
         llm = LLMProviderFactory.create("openai")
-        raw = await llm.complete(system=system_prompt, messages=messages)
-        sql = _extract_sql(raw)
-        if sql:
-            return sql
-    except Exception:  # noqa: BLE001 - fall back when LLM unavailable or returns bad output
+        return await llm.complete(system=system_prompt, messages=messages)
+    except Exception:  # noqa: BLE001
         pass
-
     llm = LLMProviderFactory.create("heuristic")
-    raw = await llm.complete(system=system_prompt, messages=messages)
+    return await llm.complete(system=system_prompt, messages=messages)
+
+
+def _parse_llm_sql_response(raw: str) -> tuple[str | None, str | None]:
+    text = raw.strip()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("CLARIFY:"):
+            return None, stripped.split(":", 1)[1].strip()
+    if text.upper().startswith("CLARIFY:"):
+        return None, text.split(":", 1)[1].strip()
+    sql = _extract_sql(raw)
+    return sql or None, None
+
+
+async def _complete_sql_llm(system_prompt: str, messages: list[LLMMessage]) -> str:
+    raw = await _complete_sql_llm_raw(system_prompt, messages)
+    sql, _clarify = _parse_llm_sql_response(raw)
+    if sql:
+        return sql
     return _extract_sql(raw) or raw.strip().rstrip(";")
 
 

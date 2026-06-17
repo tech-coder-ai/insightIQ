@@ -30,5 +30,21 @@ def format_chart_bar(*, title: str, labels: list[str], values: list[Any]) -> Res
     )
 
 
+def format_chart_line(*, title: str, labels: list[str], values: list[Any]) -> ResponsePayload:
+    return ResponsePayload(
+        response_type=ResponseType.chart_line,
+        title=title,
+        data={"labels": labels, "values": values},
+    )
+
+
+def format_explanation(*, output: str, title: str | None = None) -> ResponsePayload:
+    return ResponsePayload(
+        response_type=ResponseType.explanation,
+        title=title,
+        data={"output": output},
+    )
+
+
 def format_error(message: str) -> ResponsePayload:
     return ResponsePayload(response_type=ResponseType.error, data={"message": message})

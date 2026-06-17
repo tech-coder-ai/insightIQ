@@ -15,6 +15,7 @@ from core.export.base import ExportPayload
 from core.export.factory import ExporterFactory
 from core.models import Dashboard, DashboardCard, ScheduledReport
 from core.notifications.email import send_report_email
+from core.export.response_render import format_response_text
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,9 @@ _task: asyncio.Task[None] | None = None
 
 def _card_summary(card: DashboardCard) -> str:
     snap = card.snapshot_response_json or {}
-    data = snap.get("data", {})
-    if isinstance(data, dict):
-        if "output" in data:
-            return str(data["output"])[:500]
-        if "value" in data:
-            return str(data["value"])
+    text = format_response_text(snap)
+    if text:
+        return text[:2000]
     return str(snap.get("response_type", card.card_type))
 
 
@@ -50,7 +48,13 @@ async def build_dashboard_export_payload(
                 card.snapshot_response_json = snapshot
             except Exception:
                 logger.exception("failed to refresh card %s", card.id)
-        refreshed.append({"title": card.title, "summary": _card_summary(card)})
+        refreshed.append(
+            {
+                "title": card.title,
+                "summary": format_response_text(snapshot)[:2000],
+                "response": snapshot,
+            }
+        )
     await db.flush()
     return ExportPayload(
         title=dashboard.name,

@@ -35,6 +35,13 @@ class CollectionResponse(BaseModel):
     embedding_model: str
 
 
+class DocumentResponse(BaseModel):
+    id: uuid.UUID
+    filename: str
+    has_content: bool
+    created_at: str
+
+
 class CreateCollectionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     rag_profile: str = "naive"
@@ -93,6 +100,29 @@ async def list_collections(
             id=c.id, name=c.name, rag_profile=c.rag_profile, embedding_model=c.embedding_model
         )
         for c in res.scalars().all()
+    ]
+
+
+@router.get("/collections/{collection_id}/documents", response_model=list[DocumentResponse])
+async def list_documents(
+    collection_id: uuid.UUID,
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentResponse]:
+    await _get_collection(db, ctx.tenant_id, collection_id)
+    res = await db.execute(
+        select(Document)
+        .where(Document.collection_id == collection_id, Document.tenant_id == ctx.tenant_id)
+        .order_by(Document.created_at.desc())
+    )
+    return [
+        DocumentResponse(
+            id=d.id,
+            filename=d.filename,
+            has_content=bool((d.content_markdown or "").strip()),
+            created_at=d.created_at.isoformat(),
+        )
+        for d in res.scalars().all()
     ]
 
 

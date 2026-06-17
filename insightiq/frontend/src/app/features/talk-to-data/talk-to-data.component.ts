@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { DashboardService, Dashboard } from '../../core/dashboard.service';
 import { API_BASE } from '../../core/api.config';
@@ -11,21 +11,41 @@ import { SchemaTreeComponent } from '../../shared/schema-tree.component';
 type DataSource = { id: string; name: string; db_type: string; description?: string; metadata_status?: string };
 type Schema = { tables: { name: string; columns: { name: string; data_type: string }[] }[] };
 type ResponsePayload = { response_type: string; title?: string; data: Record<string, unknown> };
-type AskResponse = { conversation_id: string; sql: string; response: ResponsePayload };
+type AskResponse = {
+  conversation_id: string;
+  sql: string;
+  response: ResponsePayload;
+  clarification?: string;
+  awaiting_confirmation?: boolean;
+  proposed_sql?: string;
+  interpretation?: string;
+};
 type Message = {
   role: 'user' | 'assistant';
   question?: string;
   sql?: string;
   response?: ResponsePayload;
   error?: string;
+  awaitingConfirmation?: boolean;
+  proposedSql?: string;
+  interpretation?: string;
 };
 type Conversation = { id: string; title: string; starred: boolean; updated_at: string; datasource_id: string | null };
+type ChatMessageMetadata = {
+  response?: ResponsePayload;
+  datasource_id?: string;
+  sql?: string | null;
+  awaiting_confirmation?: boolean;
+  pending_sql?: string | null;
+  pending_interpretation?: string | null;
+  pending_original_question?: string | null;
+};
 type ChatMessageDto = {
   id: string;
   conversation_id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-  metadata_json: { response?: ResponsePayload; datasource_id?: string };
+  metadata_json: ChatMessageMetadata;
   created_at: string;
 };
 
@@ -55,12 +75,25 @@ type ChatMessageDto = {
           <aside class="side-panel">
             <div class="panel-section">
               <div class="panel-label">Datasource</div>
-              <select [value]="selectedSourceId()" (change)="onSourceChange($any($event.target).value)">
-                <option value="">Select a datasource…</option>
-                @for (ds of sources(); track ds.id) {
-                  <option [value]="ds.id">{{ ds.name }}</option>
+              <div class="source-row">
+                <select [value]="selectedSourceId()" (change)="onSourceChange($any($event.target).value)">
+                  <option value="">Select a datasource…</option>
+                  @for (ds of sources(); track ds.id) {
+                    <option [value]="ds.id">{{ ds.name }}</option>
+                  }
+                </select>
+                @if (selectedSourceId()) {
+                  <button
+                    type="button"
+                    class="icon-btn schema-btn"
+                    title="View schema"
+                    aria-label="View schema"
+                    (click)="openSchemaPanel()"
+                  >
+                    🗂
+                  </button>
                 }
-              </select>
+              </div>
             </div>
 
             @if (selectedSource(); as src) {
@@ -73,14 +106,6 @@ type ChatMessageDto = {
             }
 
             @if (selectedSourceId()) {
-              <div class="panel-section schema-section">
-                <div class="panel-label">
-                  Schema
-                  <button class="btn-ghost tiny" (click)="loadSchema(true)">↻</button>
-                </div>
-                <app-schema-tree [schema]="schema()" />
-              </div>
-
               <div class="history">
                 <div class="hist-head">
                   <div class="panel-label">Conversations</div>
@@ -159,16 +184,31 @@ type ChatMessageDto = {
                         @if (msg.error) {
                           <div class="error">{{ msg.error }}</div>
                         } @else {
-                          @if (msg.sql) {
+                          @if (msg.awaitingConfirmation && msg.proposedSql) {
+                            <details class="sql-details" open>
+                              <summary>Proposed SQL</summary>
+                              <pre>{{ msg.proposedSql }}</pre>
+                            </details>
+                          } @else if (msg.sql) {
                             <details class="sql-details">
                               <summary>Generated SQL</summary>
                               <pre>{{ msg.sql }}</pre>
                             </details>
                           }
                           <app-response-renderer [payload]="msg.response ?? null" />
+                          @if (msg.awaitingConfirmation) {
+                            <div class="confirm-actions">
+                              <button type="button" class="btn-primary sm" (click)="confirmProposal()" [disabled]="loading()">
+                                Yes, run it
+                              </button>
+                              <button type="button" class="btn-ghost sm" (click)="rejectProposal()" [disabled]="loading()">
+                                No, rephrase
+                              </button>
+                            </div>
+                          }
                         }
                       </div>
-                      @if (!msg.error) {
+                      @if (!msg.error && !msg.awaitingConfirmation) {
                         <div class="msg-actions">
                           @if (msg.sql) {
                             <button class="icon-btn" title="Copy SQL" (click)="copy(msg.sql || '', 's' + $index)">
@@ -206,6 +246,34 @@ type ChatMessageDto = {
         </div>
       }
     </div>
+
+    @if (schemaPanelOpen()) {
+      <div class="modal-backdrop" (click)="closeSchemaPanel()">
+        <div class="modal schema-modal" (click)="$event.stopPropagation()">
+          <div class="modal-head">
+            <h2>Schema</h2>
+            <div class="modal-head-actions">
+              <button type="button" class="btn-ghost tiny" (click)="loadSchema(true)" [disabled]="schemaLoading()">
+                ↻ Refresh
+              </button>
+              <button type="button" class="icon-btn" title="Close" (click)="closeSchemaPanel()">✕</button>
+            </div>
+          </div>
+          @if (selectedSource(); as src) {
+            <p class="modal-sub">{{ src.name }}@if (schema()?.tables.length) { · {{ schema()!.tables.length }} tables }</p>
+          }
+          <div class="schema-modal-body">
+            @if (schemaLoading()) {
+              <p class="modal-hint">Loading schema…</p>
+            } @else if (schema()?.tables.length) {
+              <app-schema-tree [schema]="schema()" />
+            } @else {
+              <p class="modal-hint">No tables in scope for this datasource.</p>
+            }
+          </div>
+        </div>
+      </div>
+    }
 
     @if (pinModalOpen()) {
       <div class="modal-backdrop" (click)="closePinModal()">
@@ -308,11 +376,21 @@ type ChatMessageDto = {
       box-shadow: var(--shadow-sm);
     }
     .panel-section { display: flex; flex-direction: column; gap: 8px; }
+    .source-row { display: flex; align-items: center; gap: 8px; }
+    .source-row select { flex: 1; min-width: 0; }
+    .schema-btn { flex-shrink: 0; width: 36px; height: 36px; justify-content: center; padding: 0; font-size: 16px; }
     .panel-label {
       font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
       color: var(--text-muted); font-weight: 700; display: flex; align-items: center; gap: 6px;
     }
-    .schema-section { flex: 1; min-height: 120px; overflow: hidden; display: flex; flex-direction: column; }
+    .schema-modal { width: min(560px, 92vw); max-height: min(80vh, 720px); display: flex; flex-direction: column; }
+    .schema-modal-body {
+      flex: 1; min-height: 0; overflow: auto;
+      padding: 4px 2px 2px;
+      border-top: 1px solid var(--border);
+      margin-top: 8px;
+    }
+    .modal-head-actions { display: flex; align-items: center; gap: 8px; }
     select {
       padding: 9px 11px; border-radius: var(--radius-md);
       border: 1px solid var(--border-strong);
@@ -324,7 +402,7 @@ type ChatMessageDto = {
     .purpose-label { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--primary); margin-bottom: 4px; }
     .purpose-card p { margin: 0; font-size: var(--text-sm); color: var(--text-2); line-height: 1.5; }
 
-    .history { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .history { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
     .hist-head { display: flex; align-items: center; justify-content: space-between; }
     .new-chat {
       padding: 4px 10px; border-radius: var(--radius-pill);
@@ -333,7 +411,7 @@ type ChatMessageDto = {
     }
     .new-chat:hover { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
     .hist-empty { font-size: var(--text-xs); color: var(--text-muted); padding: 4px 2px; line-height: 1.5; }
-    .conv-list { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
+    .conv-list { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
     .conv-item {
       display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md);
       border: 1px solid transparent; padding-right: 2px;
@@ -425,6 +503,7 @@ type ChatMessageDto = {
       background: var(--bg); border: 1px solid var(--border); font-size: var(--text-xs);
       overflow-x: auto; font-family: var(--font-mono);
     }
+    .confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
     .error { color: var(--danger); font-size: var(--text-sm); }
 
     .thinking { padding: 16px !important; flex-direction: row !important; }
@@ -483,10 +562,13 @@ export class TalkToDataComponent implements OnInit {
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
 
   readonly sources = signal<DataSource[]>([]);
   readonly selectedSourceId = signal('');
   readonly schema = signal<Schema | null>(null);
+  readonly schemaPanelOpen = signal(false);
+  readonly schemaLoading = signal(false);
   readonly messages = signal<Message[]>([]);
   readonly loading = signal(false);
   readonly pinning = signal(false);
@@ -539,9 +621,9 @@ export class TalkToDataComponent implements OnInit {
   onSourceChange(id: string): void {
     this.selectedSourceId.set(id);
     this.schema.set(null);
+    this.schemaPanelOpen.set(false);
     this.newChat();
     if (id) {
-      this.loadSchema(false);
       this.loadConversations(id);
     } else {
       this.conversations.set([]);
@@ -579,7 +661,15 @@ export class TalkToDataComponent implements OnInit {
           } else if (m.role === 'assistant') {
             const response = m.metadata_json?.response;
             if (response) {
-              out.push({ role: 'assistant', sql: m.content, response, question: lastQuestion });
+              out.push({
+                role: 'assistant',
+                sql: this.assistantSqlFromDto(m),
+                response,
+                question: lastQuestion,
+                awaitingConfirmation: !!m.metadata_json.awaiting_confirmation,
+                proposedSql: m.metadata_json.pending_sql ?? undefined,
+                interpretation: m.metadata_json.pending_interpretation ?? undefined,
+              });
             } else {
               out.push({ role: 'assistant', error: m.content });
             }
@@ -632,13 +722,47 @@ export class TalkToDataComponent implements OnInit {
   loadSchema(refresh: boolean): void {
     const id = this.selectedSourceId();
     if (!id) return;
+    this.schemaLoading.set(true);
     this.http.get<Schema>(`${API_BASE}/talk-to-data/sources/${id}/schema?refresh=${refresh}`).subscribe({
-      next: (s) => this.schema.set(s),
+      next: (s) => {
+        this.schema.set(s);
+        this.schemaLoading.set(false);
+      },
+      error: () => this.schemaLoading.set(false),
     });
+  }
+
+  openSchemaPanel(): void {
+    if (!this.selectedSourceId()) return;
+    this.schemaPanelOpen.set(true);
+    if (!this.schema()) {
+      this.loadSchema(false);
+    }
+  }
+
+  closeSchemaPanel(): void {
+    this.schemaPanelOpen.set(false);
+  }
+
+  private assistantSqlFromDto(m: ChatMessageDto): string {
+    const sqlMeta = m.metadata_json.sql;
+    if (typeof sqlMeta === 'string' && sqlMeta.trim()) {
+      return sqlMeta;
+    }
+    const content = m.content.trim();
+    return content.toUpperCase().startsWith('SELECT') ? content : '';
   }
 
   quickAsk(q: string): void {
     this.ask(q);
+  }
+
+  confirmProposal(): void {
+    this.ask('yes');
+  }
+
+  rejectProposal(): void {
+    this.ask('no');
   }
 
   ask(override?: string): void {
@@ -664,6 +788,9 @@ export class TalkToDataComponent implements OnInit {
           sql: res.sql,
           response: res.response,
           question: q,
+          awaitingConfirmation: res.awaiting_confirmation,
+          proposedSql: res.proposed_sql,
+          interpretation: res.interpretation,
         }]);
         if (wasNew) this.reloadConversations();
       },
@@ -778,12 +905,12 @@ export class TalkToDataComponent implements OnInit {
         sql: msg.sql ?? '',
         question: msg.question ?? '',
       },
-      refresh_mode: 'live',
+      refresh_mode: 'snapshot',
     }).subscribe({
       next: () => {
         this.pinning.set(false);
         this.closePinModal();
-        alert('Pinned to dashboard!');
+        void this.router.navigate(['/dashboards', dashboardId]);
       },
       error: (err: { error?: { detail?: string } }) => {
         this.pinning.set(false);

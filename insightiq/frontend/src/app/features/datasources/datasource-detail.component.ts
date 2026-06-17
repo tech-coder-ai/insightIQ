@@ -42,6 +42,7 @@ type DataSourceDetail = {
   description: string;
   metadata_status: string;
   schema_metadata: SchemaMetadata;
+  selected_scope: { tables: Record<string, string[]> };
   relationships: Relationship[];
   glossary: GlossaryEntry[];
 };
@@ -109,24 +110,42 @@ type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
         <div class="panel">
           <div class="panel-header">
             <h2>Tables &amp; columns</h2>
-            <button class="btn-ghost small" (click)="refreshSchema()" [disabled]="busy()">↻ Re-introspect</button>
+            <div class="panel-actions">
+              <button class="btn-ghost small" (click)="refreshSchema()" [disabled]="busy()">↻ Re-introspect</button>
+              <button class="btn-primary small" (click)="saveScope()" [disabled]="busy() || !hasScopeSelection()">Save scope</button>
+            </div>
           </div>
+          <p class="hint">Checked columns are exposed to Talk to Data and prompt bindings. Uncheck sensitive fields you do not want the AI to use.</p>
           @if (!d.schema_metadata.tables.length) {
             <p class="empty-line">No tables discovered.</p>
           }
           @for (t of d.schema_metadata.tables; track t.name) {
             <details class="table-block">
               <summary>
-                <strong>{{ t.name }}</strong>
-                <span class="muted">{{ t.columns.length }} columns · {{ t.indexes.length }} indexes</span>
+                <label class="scope-check" (click)="$event.stopPropagation()">
+                  <input
+                    type="checkbox"
+                    [checked]="isTableInScope(t.name)"
+                    (change)="toggleScopeTable(t.name, $any($event.target).checked)"
+                  />
+                  <strong>{{ t.name }}</strong>
+                </label>
+                <span class="muted">{{ scopeColumnCount(t.name) }}/{{ t.columns.length }} in scope · {{ t.indexes.length }} indexes</span>
               </summary>
               <table class="col-table">
                 <thead>
-                  <tr><th>Column</th><th>Type</th><th>Keys</th><th>Glossary</th><th>Tags</th></tr>
+                  <tr><th>In scope</th><th>Column</th><th>Type</th><th>Keys</th><th>Glossary</th><th>Tags</th></tr>
                 </thead>
                 <tbody>
                   @for (c of t.columns; track c.name) {
                     <tr>
+                      <td>
+                        <input
+                          type="checkbox"
+                          [checked]="isColumnInScope(t.name, c.name)"
+                          (change)="toggleScopeColumn(t.name, c.name, $any($event.target).checked)"
+                        />
+                      </td>
                       <td class="mono">{{ c.name }}</td>
                       <td class="muted">{{ c.data_type }}{{ c.nullable ? '' : ' · not null' }}</td>
                       <td>
@@ -336,6 +355,10 @@ type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-6); box-shadow: var(--shadow-sm); }
     .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-5); }
     .panel-header h2 { margin: 0; font-size: var(--text-lg); }
+    .panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .scope-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+    .scope-check input { width: auto; margin: 0; }
+    .hint { color: var(--text-muted); font-size: var(--text-sm); margin: 0 0 var(--space-4); }
     .header-actions { display: flex; gap: 8px; }
 
     .field { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--text-2); font-weight: 550; margin-bottom: 14px; }
@@ -411,6 +434,7 @@ export class DatasourceDetailComponent implements OnInit {
   readonly activeTab = signal<Tab>('overview');
   readonly relationships = signal<Relationship[]>([]);
   readonly glossary = signal<GlossaryEntry[]>([]);
+  readonly selectedScope = signal<Record<string, string[]>>({});
   readonly busy = signal(false);
   readonly message = signal('');
 
@@ -445,6 +469,7 @@ export class DatasourceDetailComponent implements OnInit {
         this.descDraft = d.description || '';
         this.relationships.set([...d.relationships]);
         this.glossary.set(d.glossary.map((g) => ({ ...g, tags: [...g.tags] })));
+        this.initScopeFromDetail(d);
       },
       error: (err) => this.message.set(err?.error?.detail ?? 'Failed to load datasource.'),
     });
@@ -474,6 +499,73 @@ export class DatasourceDetailComponent implements OnInit {
     this.http.get<SchemaMetadata>(`${API_BASE}/talk-to-data/sources/${this.id}/schema?refresh=true`).subscribe({
       next: () => { this.busy.set(false); this.message.set('✓ Schema re-introspected.'); this.load(); },
       error: (err) => { this.busy.set(false); this.message.set(err?.error?.detail ?? 'Re-introspection failed.'); },
+    });
+  }
+
+  initScopeFromDetail(d: DataSourceDetail): void {
+    const stored = d.selected_scope?.tables ?? {};
+    if (Object.keys(stored).length) {
+      this.selectedScope.set({ ...stored });
+      return;
+    }
+    const scope: Record<string, string[]> = {};
+    for (const table of d.schema_metadata.tables) {
+      scope[table.name] = table.columns.map((c) => c.name);
+    }
+    this.selectedScope.set(scope);
+  }
+
+  hasScopeSelection(): boolean {
+    return Object.values(this.selectedScope()).some((cols) => cols.length > 0);
+  }
+
+  isTableInScope(table: string): boolean {
+    return (this.selectedScope()[table]?.length ?? 0) > 0;
+  }
+
+  isColumnInScope(table: string, column: string): boolean {
+    return this.selectedScope()[table]?.includes(column) ?? false;
+  }
+
+  scopeColumnCount(table: string): number {
+    return this.selectedScope()[table]?.length ?? 0;
+  }
+
+  toggleScopeTable(table: string, checked: boolean): void {
+    const d = this.detail();
+    const previewTable = d?.schema_metadata.tables.find((t) => t.name === table);
+    if (!previewTable) return;
+    const next = { ...this.selectedScope() };
+    if (checked) next[table] = previewTable.columns.map((c) => c.name);
+    else delete next[table];
+    this.selectedScope.set(next);
+  }
+
+  toggleScopeColumn(table: string, column: string, checked: boolean): void {
+    const next = { ...this.selectedScope() };
+    const cols = new Set(next[table] ?? []);
+    if (checked) cols.add(column);
+    else cols.delete(column);
+    if (cols.size) next[table] = [...cols];
+    else delete next[table];
+    this.selectedScope.set(next);
+  }
+
+  saveScope(): void {
+    if (!this.hasScopeSelection()) return;
+    this.busy.set(true);
+    this.http.put<{ tables: Record<string, string[]> }>(`${API_BASE}/talk-to-data/sources/${this.id}/scope`, {
+      selected_scope: { tables: this.selectedScope() },
+    }).subscribe({
+      next: (res) => {
+        this.busy.set(false);
+        this.selectedScope.set({ ...res.tables });
+        this.message.set('✓ Scope saved.');
+      },
+      error: (err) => {
+        this.busy.set(false);
+        this.message.set(err?.error?.detail ?? 'Save scope failed.');
+      },
     });
   }
 

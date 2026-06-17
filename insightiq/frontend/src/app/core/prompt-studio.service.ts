@@ -4,13 +4,30 @@ import { Observable } from 'rxjs';
 
 import { API_BASE } from './api.config';
 
+export type PromptBindings = {
+  type?: 'none' | 'sql' | 'rag' | 'file';
+  datasource_id?: string;
+  sql?: string;
+  collection_id?: string;
+  query_variable?: string;
+  rag_profile?: string;
+  document_id?: string;
+};
+
 export type PromptTemplate = {
   id: string;
   name: string;
   description: string;
-  bindings_json: Record<string, unknown>;
+  bindings_json: PromptBindings;
   is_shared: boolean;
   latest_version: number | null;
+};
+
+export type PromptTemplateDetail = PromptTemplate & {
+  latest_version_id: string | null;
+  template_body: string;
+  system_prompt: string;
+  variables_schema_json: Record<string, unknown>;
 };
 
 export type PromptVersion = {
@@ -28,6 +45,7 @@ export type PromptRun = {
   output: string;
   eval_scores: { faithfulness: number; relevancy: number; overall: number; notes: string };
   response: Record<string, unknown>;
+  context_preview?: string;
 };
 
 @Injectable({ providedIn: 'root' })
@@ -38,15 +56,26 @@ export class PromptStudioService {
     return this.http.get<PromptTemplate[]>(`${API_BASE}/prompt-studio/templates`);
   }
 
+  getTemplate(id: string): Observable<PromptTemplateDetail> {
+    return this.http.get<PromptTemplateDetail>(`${API_BASE}/prompt-studio/templates/${id}`);
+  }
+
   createTemplate(body: {
     name: string;
     description?: string;
     template_body: string;
     system_prompt?: string;
-    bindings_json?: Record<string, unknown>;
+    bindings_json?: PromptBindings;
     variables_schema_json?: Record<string, unknown>;
   }): Observable<PromptTemplate> {
     return this.http.post<PromptTemplate>(`${API_BASE}/prompt-studio/templates`, body);
+  }
+
+  updateTemplate(
+    id: string,
+    body: { name?: string; description?: string; bindings_json?: PromptBindings },
+  ): Observable<PromptTemplate> {
+    return this.http.patch<PromptTemplate>(`${API_BASE}/prompt-studio/templates/${id}`, body);
   }
 
   listVersions(templateId: string): Observable<PromptVersion[]> {
@@ -56,7 +85,6 @@ export class PromptStudioService {
   createVersion(
     templateId: string,
     body: {
-      name: string;
       template_body: string;
       system_prompt?: string;
       variables_schema_json?: Record<string, unknown>;
@@ -65,8 +93,15 @@ export class PromptStudioService {
     return this.http.post<PromptVersion>(`${API_BASE}/prompt-studio/templates/${templateId}/versions`, body);
   }
 
-  run(templateId: string, variables: Record<string, unknown>): Observable<PromptRun> {
-    return this.http.post<PromptRun>(`${API_BASE}/prompt-studio/templates/${templateId}/run`, { variables });
+  run(
+    templateId: string,
+    variables: Record<string, unknown>,
+    versionId?: string,
+  ): Observable<PromptRun> {
+    return this.http.post<PromptRun>(`${API_BASE}/prompt-studio/templates/${templateId}/run`, {
+      variables,
+      version_id: versionId ?? null,
+    });
   }
 
   listRuns(templateId: string): Observable<PromptRun[]> {

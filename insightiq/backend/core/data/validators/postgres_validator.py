@@ -18,8 +18,11 @@ class PostgresValidator(ISQLValidator):
         if not guard.ok:
             return guard
         try:
+            await self._session.execute(text("SAVEPOINT sp_validate_sql"))
             await self._session.execute(text(f"EXPLAIN {sql}"))
+            await self._session.execute(text("RELEASE SAVEPOINT sp_validate_sql"))
         except Exception as e:
+            await self._session.execute(text("ROLLBACK TO SAVEPOINT sp_validate_sql"))
             return ValidationResult(ok=False, error=str(e))
         return ValidationResult(ok=True)
 

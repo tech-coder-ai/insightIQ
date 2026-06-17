@@ -1,6 +1,6 @@
 import { Component, OnInit, inject } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
-import { GridsterItem, GridsterModule } from 'angular-gridster2';
+import { GridsterItem, GridsterModule, DisplayGrid, GridType } from 'angular-gridster2';
 
 import { DashboardDetail, DashboardService } from '../../core/dashboard.service';
 import { DashboardCardComponent } from '../../shared/dashboard-card.component';
@@ -16,31 +16,42 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         <span class="badge">Read-only</span>
       </header>
 
-      <gridster [options]="options">
-        @for (item of gridItems; track item.card.id) {
-          <gridster-item [item]="item.grid">
-            <app-dashboard-card
-              [title]="item.card.title"
-              [refreshMode]="item.card.refresh_mode"
-              [payload]="item.payload"
-            />
-          </gridster-item>
-        }
-      </gridster>
+      <div class="canvas-shell">
+        <gridster [options]="options">
+          @for (item of gridItems; track item.card.id) {
+            <gridster-item [item]="item.grid">
+              <app-dashboard-card
+                [title]="item.card.title"
+                [refreshMode]="item.card.refresh_mode"
+                [payload]="item.payload"
+              />
+            </gridster-item>
+          }
+        </gridster>
+      </div>
     </div>
   `,
   styles: [
     `
+      :host {
+        display: block;
+        min-height: 100vh;
+      }
       .page {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
         padding: var(--space-8);
-        max-width: 1200px;
-        margin: 0 auto;
+        max-width: none;
+        width: 100%;
+        box-sizing: border-box;
       }
       header {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin-bottom: var(--space-6);
+        margin-bottom: var(--space-4);
+        flex-shrink: 0;
       }
       h1 { font-size: var(--text-xl); }
       .brand-mark {
@@ -56,16 +67,28 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         background: var(--surface-3);
         color: var(--text-2);
       }
-      gridster {
-        background: var(--surface-2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
+      .canvas-shell {
+        flex: 1;
+        min-height: 0;
+        width: 100%;
       }
-      gridster-item {
+      .canvas-shell gridster {
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-height: calc(100vh - 120px);
         background: transparent;
-        border: none;
-        border-radius: var(--radius-md);
-        overflow: hidden;
+      }
+      :host ::ng-deep gridster-item {
+        background: transparent !important;
+      }
+      :host ::ng-deep gridster .gridster-column,
+      :host ::ng-deep gridster .gridster-row {
+        display: none !important;
+      }
+      :host ::ng-deep gridster-item app-dashboard-card {
+        display: block;
+        height: 100%;
       }
     `,
   ],
@@ -78,12 +101,16 @@ export class PublicDashboardComponent implements OnInit {
   gridItems: { card: { id: string; title: string; refresh_mode: string }; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }[] = [];
 
   options = {
-    gridType: 'fit' as const,
+    gridType: GridType.Fit,
+    displayGrid: DisplayGrid.None,
+    setGridSize: true,
     draggable: { enabled: false },
     resizable: { enabled: false },
-    margin: 10,
+    margin: 12,
+    outerMargin: true,
     minCols: 12,
     maxCols: 12,
+    minRows: 4,
   };
 
   ngOnInit(): void {
@@ -91,9 +118,20 @@ export class PublicDashboardComponent implements OnInit {
     this.dashboards.getPublic(token).subscribe({
       next: (d) => {
         this.dashboard = d;
+        const maxRow = d.cards.reduce((max, card) => {
+          const y = Number(card.layout_json?.['y'] ?? 0);
+          const rows = Number(card.layout_json?.['rows'] ?? 3);
+          return Math.max(max, y + rows);
+        }, 0);
+        this.options = { ...this.options, minRows: Math.max(maxRow, 4) };
         this.gridItems = d.cards.map((card) => ({
           card,
-          grid: card.layout_json as GridsterItem,
+          grid: {
+            x: Number(card.layout_json?.['x'] ?? 0),
+            y: Number(card.layout_json?.['y'] ?? 0),
+            cols: Number(card.layout_json?.['cols'] ?? 4),
+            rows: Math.max(Number(card.layout_json?.['rows'] ?? 3), 2),
+          } as GridsterItem,
           payload: card.snapshot_response_json as { response_type: string; data: Record<string, unknown> },
         }));
       },

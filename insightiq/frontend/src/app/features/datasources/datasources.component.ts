@@ -12,8 +12,14 @@ type DataSource = {
   dialect: string;
   description?: string;
   metadata_status?: string;
+  selected_table_count?: number;
+  selected_column_count?: number;
   created_at?: string;
 };
+
+type ColumnPreview = { name: string; data_type: string };
+type TablePreview = { name: string; columns: ColumnPreview[] };
+type SchemaPreview = { tables: TablePreview[] };
 
 type ConnectorType = {
   key: string;
@@ -90,7 +96,8 @@ const DB_COLORS: Record<string, string> = {
               <button class="btn-ghost small" (click)="selectedConnector.set(null)">Change</button>
             </div>
 
-            <form [formGroup]="form" (ngSubmit)="register()">
+            <form [formGroup]="form" (ngSubmit)="continueToScope()">
+              @if (wizardStep() === 'connect') {
               <div class="form-row">
                 <label>
                   <span>Source name *</span>
@@ -281,16 +288,74 @@ const DB_COLORS: Record<string, string> = {
                 </div>
               }
 
-              @if (statusMessage()) {
-                <div [class]="statusMessage().startsWith('✓') ? 'msg-ok' : 'msg-err'">{{ statusMessage() }}</div>
-              }
+                @if (statusMessage()) {
+                  <div [class]="statusMessage().startsWith('✓') ? 'msg-ok' : 'msg-err'">{{ statusMessage() }}</div>
+                }
 
-              <div class="form-actions">
-                <button type="submit" class="btn-primary" [disabled]="!canSubmit() || saving()">
-                  {{ saving() ? 'Registering…' : 'Register datasource' }}
-                </button>
-              </div>
+                <div class="form-actions">
+                  <button type="submit" class="btn-primary" [disabled]="!canSubmit() || saving()">
+                    {{ saving() ? 'Connecting…' : 'Continue to table selection →' }}
+                  </button>
+                </div>
+              }
             </form>
+
+            @if (wizardStep() === 'scope' && previewSchema(); as schema) {
+              <div class="scope-step">
+                <div class="scope-header">
+                  <div>
+                    <h3>Select tables &amp; columns</h3>
+                    <p class="hint">Choose what this datasource exposes to AI queries. You can change this later on the datasource detail page.</p>
+                  </div>
+                  <div class="scope-actions-top">
+                    <button type="button" class="btn-ghost small" (click)="selectAllScope()">Select all</button>
+                    <button type="button" class="btn-ghost small" (click)="clearScope()">Clear</button>
+                  </div>
+                </div>
+
+                @if (statusMessage()) {
+                  <div [class]="statusMessage().startsWith('✓') ? 'msg-ok' : 'msg-err'">{{ statusMessage() }}</div>
+                }
+
+                <div class="scope-list">
+                  @for (t of schema.tables; track t.name) {
+                    <details class="scope-table" [open]="schema.tables.length <= 3">
+                      <summary>
+                        <label class="scope-check" (click)="$event.stopPropagation()">
+                          <input
+                            type="checkbox"
+                            [checked]="isTableSelected(t.name)"
+                            (change)="toggleTable(t.name, $any($event.target).checked)"
+                          />
+                          <strong>{{ t.name }}</strong>
+                        </label>
+                        <span class="hint">{{ selectedColumnCount(t.name) }}/{{ t.columns.length }} columns</span>
+                      </summary>
+                      <div class="scope-columns">
+                        @for (c of t.columns; track c.name) {
+                          <label class="scope-check">
+                            <input
+                              type="checkbox"
+                              [checked]="isColumnSelected(t.name, c.name)"
+                              (change)="toggleColumn(t.name, c.name, $any($event.target).checked)"
+                            />
+                            <span class="mono">{{ c.name }}</span>
+                            <span class="hint">{{ c.data_type }}</span>
+                          </label>
+                        }
+                      </div>
+                    </details>
+                  }
+                </div>
+
+                <div class="form-actions">
+                  <button type="button" class="btn-ghost" (click)="backToConnect()">← Back</button>
+                  <button type="button" class="btn-primary" [disabled]="!hasScopeSelection() || saving()" (click)="register()">
+                    {{ saving() ? 'Registering…' : 'Register datasource' }}
+                  </button>
+                </div>
+              </div>
+            }
           }
         </div>
       }
@@ -303,35 +368,42 @@ const DB_COLORS: Record<string, string> = {
         </div>
       }
 
-      <div class="source-list">
+      <div class="source-grid">
         @for (ds of sources(); track ds.id) {
-          <div class="source-card" (click)="manage(ds.id)">
-            <div class="source-badge" [style.background]="typeColor(ds.db_type)">
-              {{ typeIcon(ds.db_type) }}
-            </div>
-            <div class="source-info">
-              <div class="source-name-row">
-                <span class="source-name">{{ ds.name }}</span>
-                <span class="status-pill" [attr.data-status]="ds.metadata_status || 'draft'">{{ statusLabel(ds.metadata_status) }}</span>
+          <article class="source-card">
+            <div class="card-top" (click)="manage(ds.id)">
+              <div class="source-badge" [style.background]="typeColor(ds.db_type)">
+                {{ typeIcon(ds.db_type) }}
               </div>
-              <div class="source-meta">{{ typeLabel(ds.db_type) }} · dialect: {{ ds.dialect }}</div>
-              @if (ds.description) {
-                <div class="source-desc">{{ ds.description }}</div>
-              }
+              <div class="source-info">
+                <div class="source-name-row">
+                  <span class="source-name">{{ ds.name }}</span>
+                  <span class="status-pill" [attr.data-status]="ds.metadata_status || 'draft'">{{ statusLabel(ds.metadata_status) }}</span>
+                </div>
+                <div class="source-type">{{ typeLabel(ds.db_type) }}</div>
+                @if (ds.description) {
+                  <p class="source-desc">{{ ds.description }}</p>
+                } @else {
+                  <p class="source-desc muted">No description yet.</p>
+                }
+                <div class="source-scope">
+                  {{ ds.selected_table_count ?? 0 }} tables · {{ ds.selected_column_count ?? 0 }} columns
+                </div>
+              </div>
             </div>
-            <div class="source-actions" (click)="$event.stopPropagation()">
+            <div class="source-actions">
               <button class="btn-ghost small" (click)="manage(ds.id)">Manage</button>
               <button class="btn-ghost small" (click)="talkTo(ds.id)">Talk to it</button>
               <button class="btn-ghost small" (click)="testConnection(ds.id)">Test</button>
               <button class="btn-danger small" (click)="deleteSource(ds.id)">Delete</button>
             </div>
-          </div>
+          </article>
         }
       </div>
     </div>
   `,
   styles: [`
-    .page { max-width: 960px; }
+    .page { max-width: 1100px; }
 
     /* buttons */
     .btn-primary {
@@ -453,7 +525,36 @@ const DB_COLORS: Record<string, string> = {
     .glob-row input { flex: 1; }
     .glob-row span { color: var(--text-muted); }
 
-    .form-actions { display: flex; gap: 10px; }
+    .form-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    .scope-step { display: flex; flex-direction: column; gap: var(--space-5); margin-top: var(--space-4); }
+    .scope-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .scope-header h3 { margin: 0 0 4px; font-size: var(--text-md); }
+    .scope-actions-top { display: flex; gap: 8px; flex-shrink: 0; }
+    .scope-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
+    .scope-table {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface-2);
+      padding: 0 12px 10px;
+    }
+    .scope-table summary {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 10px 0; cursor: pointer; list-style: none;
+    }
+    .scope-table summary::-webkit-details-marker { display: none; }
+    .scope-columns {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 6px 12px;
+      padding-bottom: 4px;
+    }
+    .scope-check {
+      display: flex; align-items: center; gap: 8px;
+      font-size: var(--text-sm); color: var(--text-2); cursor: pointer;
+    }
+    .scope-check input { width: auto; margin: 0; }
+    .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
     .info { font-size: var(--text-sm); color: var(--text-2); padding: 14px; background: var(--surface-2); border-radius: var(--radius-md); }
     .msg-ok  { color: var(--success); font-size: var(--text-sm); }
     .msg-err { color: var(--danger); font-size: var(--text-sm); }
@@ -469,29 +570,42 @@ const DB_COLORS: Record<string, string> = {
     .empty strong { color: var(--text); }
 
     /* source cards */
-    .source-list { display: flex; flex-direction: column; gap: 10px; }
+    .source-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+    }
     .source-card {
-      display: flex; align-items: center; gap: 16px;
-      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: var(--radius-md);
+      border-radius: var(--radius-lg);
       box-shadow: var(--shadow-sm);
-      transition: border-color var(--dur-fast) var(--ease);
+      overflow: hidden;
+      transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
     }
-    .source-card { cursor: pointer; }
-    .source-card:hover { border-color: var(--border-strong); }
+    .source-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .card-top {
+      display: flex; gap: 14px; padding: 16px 16px 12px; cursor: pointer; flex: 1;
+    }
     .source-badge {
-      width: 42px; height: 42px; border-radius: var(--radius-md);
-      display: grid; place-items: center; font-size: 20px; flex-shrink: 0;
-      background: var(--surface-3);
+      width: 44px; height: 44px; border-radius: var(--radius-md);
+      display: grid; place-items: center; font-size: 22px; flex-shrink: 0;
     }
     .source-info { flex: 1; min-width: 0; }
-    .source-name-row { display: flex; align-items: center; gap: 10px; }
-    .source-name { font-size: var(--text-md); font-weight: 600; }
-    .source-meta { font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px; }
-    .source-desc { font-size: var(--text-sm); color: var(--text-2); margin-top: 5px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .source-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .source-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .source-name { font-size: var(--text-md); font-weight: 650; }
+    .source-type { font-size: var(--text-xs); color: var(--primary-text); font-weight: 600; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .source-desc { font-size: var(--text-sm); color: var(--text-2); margin: 8px 0 0; line-height: 1.45; }
+    .source-desc.muted { color: var(--text-muted); font-style: italic; }
+    .source-scope { font-size: var(--text-xs); color: var(--text-muted); margin-top: 8px; }
+    .source-actions {
+      display: flex; gap: 8px; flex-wrap: wrap;
+      padding: 10px 16px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-2);
+    }
     .status-pill {
       font-size: 10px; font-weight: 650; padding: 2px 9px; border-radius: var(--radius-pill);
       background: var(--surface-3); color: var(--text-2); text-transform: capitalize;
@@ -516,6 +630,9 @@ export class DatasourcesComponent implements OnInit {
   ]);
 
   readonly uploadFile = signal<File | null>(null);
+  readonly wizardStep = signal<'connect' | 'scope'>('connect');
+  readonly previewSchema = signal<SchemaPreview | null>(null);
+  readonly selectedScope = signal<Record<string, string[]>>({});
 
   readonly form = this.fb.group({
     name:              ['', Validators.required],
@@ -552,6 +669,9 @@ export class DatasourcesComponent implements OnInit {
   selectConnector(c: ConnectorType): void {
     if (!c.supported) return;
     this.selectedConnector.set(c);
+    this.wizardStep.set('connect');
+    this.previewSchema.set(null);
+    this.selectedScope.set({});
     this.statusMessage.set('');
     this.uploadFile.set(null);
     this.form.patchValue({ port: this.defaultPort(c.key) as unknown as number });
@@ -560,6 +680,9 @@ export class DatasourcesComponent implements OnInit {
   cancelForm(): void {
     this.showForm.set(false);
     this.selectedConnector.set(null);
+    this.wizardStep.set('connect');
+    this.previewSchema.set(null);
+    this.selectedScope.set({});
     this.uploadFile.set(null);
     this.form.reset({ url_style: 'path', region: 'us-east-1', auth: 'NOSASL', table_name_single: 'data', description: '' });
     this.statusMessage.set('');
@@ -580,9 +703,182 @@ export class DatasourcesComponent implements OnInit {
     return true;
   }
 
-  register(): void {
+  continueToScope(): void {
     const c = this.selectedConnector();
     if (!c || !this.canSubmit()) return;
+
+    this.saving.set(true);
+    this.statusMessage.set('');
+
+    if (c.key === 'duckdb_files') {
+      const file = this.uploadFile();
+      const v = this.form.getRawValue();
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('table_name', v.table_name_single || 'data');
+      fd.append('file', file);
+      this.http.post<SchemaPreview>(`${API_BASE}/talk-to-data/sources/preview-schema/upload`, fd).subscribe({
+        next: (schema) => this.onPreviewReady(schema),
+        error: (err: { error?: { detail?: string } }) => {
+          this.saving.set(false);
+          this.statusMessage.set(err?.error?.detail ?? 'Could not read file.');
+        },
+      });
+      return;
+    }
+
+    this.http.post<SchemaPreview>(`${API_BASE}/talk-to-data/sources/preview-schema`, {
+      db_type: c.key,
+      connection: this.buildConnection(),
+    }).subscribe({
+      next: (schema) => this.onPreviewReady(schema),
+      error: (err: { error?: { detail?: string } }) => {
+        this.saving.set(false);
+        this.statusMessage.set(err?.error?.detail ?? 'Connection or schema preview failed.');
+      },
+    });
+  }
+
+  onPreviewReady(schema: SchemaPreview): void {
+    this.saving.set(false);
+    if (!schema.tables.length) {
+      this.statusMessage.set('No tables found. Check your connection details.');
+      return;
+    }
+    this.previewSchema.set(schema);
+    this.initScopeFromPreview(schema);
+    this.wizardStep.set('scope');
+    this.statusMessage.set('');
+  }
+
+  backToConnect(): void {
+    this.wizardStep.set('connect');
+    this.previewSchema.set(null);
+    this.statusMessage.set('');
+  }
+
+  initScopeFromPreview(schema: SchemaPreview): void {
+    const scope: Record<string, string[]> = {};
+    for (const table of schema.tables) {
+      scope[table.name] = table.columns.map((c) => c.name);
+    }
+    this.selectedScope.set(scope);
+  }
+
+  selectAllScope(): void {
+    const schema = this.previewSchema();
+    if (schema) this.initScopeFromPreview(schema);
+  }
+
+  clearScope(): void {
+    this.selectedScope.set({});
+  }
+
+  hasScopeSelection(): boolean {
+    return Object.values(this.selectedScope()).some((cols) => cols.length > 0);
+  }
+
+  isTableSelected(table: string): boolean {
+    return (this.selectedScope()[table]?.length ?? 0) > 0;
+  }
+
+  isColumnSelected(table: string, column: string): boolean {
+    return this.selectedScope()[table]?.includes(column) ?? false;
+  }
+
+  selectedColumnCount(table: string): number {
+    return this.selectedScope()[table]?.length ?? 0;
+  }
+
+  toggleTable(table: string, checked: boolean): void {
+    const schema = this.previewSchema();
+    const previewTable = schema?.tables.find((t) => t.name === table);
+    if (!previewTable) return;
+    const next = { ...this.selectedScope() };
+    if (checked) {
+      next[table] = previewTable.columns.map((c) => c.name);
+    } else {
+      delete next[table];
+    }
+    this.selectedScope.set(next);
+  }
+
+  toggleColumn(table: string, column: string, checked: boolean): void {
+    const next = { ...this.selectedScope() };
+    const cols = new Set(next[table] ?? []);
+    if (checked) cols.add(column);
+    else cols.delete(column);
+    if (cols.size) next[table] = [...cols];
+    else delete next[table];
+    this.selectedScope.set(next);
+  }
+
+  scopePayload(): { tables: Record<string, string[]> } {
+    return { tables: this.selectedScope() };
+  }
+
+  buildConnection(): Record<string, unknown> {
+    const c = this.selectedConnector();
+    const v = this.form.getRawValue();
+    if (!c) return {};
+
+    if (['postgres', 'mssql', 'oracle'].includes(c.key)) {
+      const connection: Record<string, unknown> = {
+        host: v.host,
+        port: Number(v.port),
+        database: v.database,
+        user: v.user,
+        password: v.password,
+      };
+      if (v.schema_name) connection['schema'] = v.schema_name;
+      return connection;
+    }
+    if (c.key === 'snowflake') {
+      const connection: Record<string, unknown> = {
+        account: v.account,
+        warehouse: v.warehouse,
+        database: v.database,
+        user: v.user,
+        password: v.password,
+      };
+      if (v.schema_name) connection['schema'] = v.schema_name;
+      if (v.role) connection['role'] = v.role;
+      return connection;
+    }
+    if (c.key === 'hive') {
+      return {
+        host: v.host,
+        port: Number(v.port),
+        database: v.database,
+        auth: v.auth,
+        user: v.user,
+        password: v.password,
+      };
+    }
+    if (c.key === 'bigquery') {
+      return { project: v.project, dataset: v.dataset, credentials_json: v.credentials_json };
+    }
+    if (c.key === 's3_object_store') {
+      const tableGlobs: Record<string, string> = {};
+      this.globs().forEach((g) => { if (g.table) tableGlobs[g.table] = g.pattern; });
+      return {
+        endpoint: v.endpoint,
+        region: v.region,
+        access_key: v.access_key,
+        secret_key: v.secret_key,
+        url_style: v.url_style,
+        table_globs: tableGlobs,
+      };
+    }
+    return {};
+  }
+
+  register(): void {
+    const c = this.selectedConnector();
+    if (!c || !this.hasScopeSelection()) {
+      this.statusMessage.set('Select at least one table and column.');
+      return;
+    }
 
     if (c.key === 'duckdb_files') {
       this.uploadFileSource();
@@ -590,32 +886,14 @@ export class DatasourcesComponent implements OnInit {
     }
 
     const v = this.form.getRawValue();
-    let connection: Record<string, unknown> = {};
-
-    if (['postgres', 'mssql', 'oracle'].includes(c.key)) {
-      connection = { host: v.host, port: Number(v.port), database: v.database, user: v.user, password: v.password };
-      if (v.schema_name) connection['schema'] = v.schema_name;
-    } else if (c.key === 'snowflake') {
-      connection = { account: v.account, warehouse: v.warehouse, database: v.database, user: v.user, password: v.password };
-      if (v.schema_name) connection['schema'] = v.schema_name;
-      if (v.role) connection['role'] = v.role;
-    } else if (c.key === 'hive') {
-      connection = { host: v.host, port: Number(v.port), database: v.database, auth: v.auth, user: v.user, password: v.password };
-    } else if (c.key === 'bigquery') {
-      connection = { project: v.project, dataset: v.dataset, credentials_json: v.credentials_json };
-    } else if (c.key === 's3_object_store') {
-      const tableGlobs: Record<string, string> = {};
-      this.globs().forEach((g) => { if (g.table) tableGlobs[g.table] = g.pattern; });
-      connection = { endpoint: v.endpoint, region: v.region, access_key: v.access_key, secret_key: v.secret_key, url_style: v.url_style, table_globs: tableGlobs };
-    }
-
     this.saving.set(true);
     this.statusMessage.set('');
     this.http.post<DataSource>(`${API_BASE}/talk-to-data/sources`, {
       name: v.name,
       db_type: c.key,
-      connection,
+      connection: this.buildConnection(),
       description: v.description || '',
+      selected_scope: this.scopePayload(),
     }).subscribe({
       next: (ds) => {
         this.saving.set(false);
@@ -638,6 +916,7 @@ export class DatasourcesComponent implements OnInit {
     fd.append('name', v.name!);
     fd.append('table_name', v.table_name_single || 'data');
     fd.append('description', v.description || '');
+    fd.append('selected_scope_json', JSON.stringify(this.scopePayload()));
     fd.append('file', file);
 
     this.saving.set(true);

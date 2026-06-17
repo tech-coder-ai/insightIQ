@@ -48,12 +48,24 @@ export class DashboardService {
     return this.http.post<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards`, body);
   }
 
+  updateCard(
+    dashboardId: string,
+    cardId: string,
+    body: { title?: string; layout_json?: Record<string, unknown> },
+  ): Observable<DashboardCard> {
+    return this.http.patch<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards/${cardId}`, body);
+  }
+
   updateLayout(dashboardId: string, cardId: string, layout_json: Record<string, unknown>): Observable<DashboardCard> {
-    return this.http.patch<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards/${cardId}`, { layout_json });
+    return this.updateCard(dashboardId, cardId, { layout_json });
   }
 
   refreshCard(dashboardId: string, cardId: string): Observable<DashboardCard> {
     return this.http.post<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards/${cardId}/refresh`, {});
+  }
+
+  removeCard(dashboardId: string, cardId: string): Observable<void> {
+    return this.http.delete<void>(`${API_BASE}/dashboards/${dashboardId}/cards/${cardId}`);
   }
 
   updateFilters(dashboardId: string, global_filters_json: Record<string, unknown>): Observable<Dashboard> {

@@ -16,7 +16,7 @@ type ResponsePayload = {
   template: `
     @if (payload) {
       <div class="response">
-        @if (payload.title) {
+        @if (showTitle && payload.title) {
           <h3>{{ payload.title }}</h3>
         }
 
@@ -38,6 +38,26 @@ type ResponsePayload = {
                   <span class="bar-value">{{ chartValues[i] }}</span>
                 </div>
               }
+            </div>
+          }
+          @case ('chart_line') {
+            <div class="line-chart">
+              <svg viewBox="0 0 400 160" preserveAspectRatio="none" class="line-svg">
+                <polyline [attr.points]="linePoints" fill="none" stroke="var(--primary)" stroke-width="2" />
+                @for (point of linePointCoords; track point.i) {
+                  <circle [attr.cx]="point.x" [attr.cy]="point.y" r="3" fill="var(--primary)" />
+                }
+              </svg>
+              <div class="line-labels">
+                @for (label of chartLabels; track label) {
+                  <span>{{ label }}</span>
+                }
+              </div>
+              <div class="line-values">
+                @for (value of chartValues; track $index) {
+                  <span>{{ value }}</span>
+                }
+              </div>
             </div>
           }
           @case ('data_table') {
@@ -104,6 +124,19 @@ type ResponsePayload = {
         transition: width var(--dur) var(--ease);
       }
       .bar-value { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+      .line-chart { display: grid; gap: 8px; }
+      .line-svg { width: 100%; height: 160px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); }
+      .line-labels, .line-values {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 1fr;
+        gap: 6px;
+        font-size: var(--text-xs);
+        color: var(--text-muted);
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
+      .line-values { color: var(--text-2); font-weight: 550; }
       .explanation {
         line-height: 1.6;
         white-space: pre-wrap;
@@ -124,6 +157,7 @@ type ResponsePayload = {
 })
 export class ResponseRendererComponent {
   @Input() payload: ResponsePayload | null = null;
+  @Input() showTitle = true;
 
   get tableColumns(): string[] {
     return (this.payload?.data['columns'] as string[]) ?? [];
@@ -145,5 +179,23 @@ export class ResponseRendererComponent {
     const values = this.chartValues;
     const max = Math.max(...values, 1);
     return (Number(values[index]) / max) * 100;
+  }
+
+  get linePointCoords(): { i: number; x: number; y: number }[] {
+    const values = this.chartValues;
+    if (!values.length) return [];
+    const max = Math.max(...values, 1);
+    const min = Math.min(...values, 0);
+    const span = Math.max(max - min, 1);
+    const last = values.length - 1;
+    return values.map((value, i) => ({
+      i,
+      x: last === 0 ? 200 : (i / last) * 380 + 10,
+      y: 150 - ((Number(value) - min) / span) * 130,
+    }));
+  }
+
+  get linePoints(): string {
+    return this.linePointCoords.map((p) => `${p.x},${p.y}`).join(' ');
   }
 }

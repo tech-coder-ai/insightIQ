@@ -6,6 +6,7 @@ from pptx import Presentation
 from pptx.util import Pt
 
 from core.export.base import EXPORTERS, ExportPayload, ExportResult, IExporter
+from core.export.response_render import format_response_text
 
 
 @EXPORTERS.register("pptx")
@@ -32,7 +33,11 @@ class PptxExporter(IExporter):
             body = slide.placeholders[1].text_frame
             body.clear()
             p = body.paragraphs[0]
-            p.text = str(card.get("summary", ""))[:1200]
+            response = card.get("response")
+            if response:
+                p.text = format_response_text(response)[:1200]
+            else:
+                p.text = str(card.get("summary", ""))[:1200]
             p.font.size = Pt(14)
 
         buffer = BytesIO()

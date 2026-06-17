@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { GridsterConfig, GridsterItem, GridsterModule } from 'angular-gridster2';
+import { GridsterConfig, GridsterItem, GridsterModule, DisplayGrid, GridType } from 'angular-gridster2';
 import { Subscription, interval } from 'rxjs';
 
 import { DashboardCard, DashboardDetail, DashboardService } from '../../core/dashboard.service';
@@ -46,31 +46,46 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         <p class="share">Share link: <code>{{ shareUrl }}</code></p>
       }
 
-      <gridster [options]="options">
-        @for (item of gridItems; track item.card.id) {
-          <gridster-item [item]="item.grid">
-            <app-dashboard-card
-              [title]="item.card.title"
-              [refreshMode]="item.card.refresh_mode"
-              [payload]="item.payload"
-            />
-          </gridster-item>
-        }
-      </gridster>
+      <div class="canvas-shell">
+        <gridster [options]="options">
+          @for (item of gridItems; track item.card.id) {
+            <gridster-item [item]="item.grid">
+              <app-dashboard-card
+                [title]="item.card.title"
+                [refreshMode]="item.card.refresh_mode"
+                [payload]="item.payload"
+                [removable]="true"
+                [editable]="true"
+                (remove)="removeCard(item)"
+                (titleChange)="renameCard(item, $event)"
+              />
+            </gridster-item>
+          }
+        </gridster>
+      </div>
     </div>
   `,
   styles: [
     `
+      :host {
+        display: block;
+        height: calc(100vh - var(--space-8) - var(--space-12));
+      }
       .page {
-        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        max-width: none;
+        width: 100%;
       }
       header {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
         gap: var(--space-4);
-        margin-bottom: var(--space-5);
+        margin-bottom: var(--space-4);
         flex-wrap: wrap;
+        flex-shrink: 0;
       }
       h1 {
         margin: 6px 0 0;
@@ -91,23 +106,15 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
-        margin-bottom: var(--space-5);
+        margin-bottom: var(--space-4);
+        flex-shrink: 0;
       }
       .filters .input { width: auto; min-width: 160px; }
-      gridster {
-        background: var(--surface-2);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-      }
-      gridster-item {
-        background: transparent;
-        border: none;
-        border-radius: var(--radius-md);
-        overflow: hidden;
-      }
       .share {
         font-size: var(--text-sm);
         color: var(--text-2);
+        flex-shrink: 0;
+        margin-bottom: var(--space-3);
       }
       .share code {
         color: var(--primary-text);
@@ -115,6 +122,28 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         padding: 2px 8px;
         border-radius: var(--radius-sm);
         font-family: var(--font-mono);
+      }
+      .canvas-shell {
+        flex: 1;
+        min-height: 0;
+        width: 100%;
+      }
+      .canvas-shell gridster {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+      }
+      :host ::ng-deep gridster-item {
+        background: transparent !important;
+      }
+      :host ::ng-deep gridster .gridster-column,
+      :host ::ng-deep gridster .gridster-row {
+        display: none !important;
+      }
+      :host ::ng-deep gridster-item app-dashboard-card {
+        display: block;
+        height: 100%;
       }
     `,
   ],
@@ -133,14 +162,17 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
   private dashboardId = '';
 
   options: GridsterConfig = {
-    gridType: 'fit',
-    draggable: { enabled: true },
+    gridType: GridType.Fit,
+    displayGrid: DisplayGrid.None,
+    setGridSize: true,
+    draggable: { enabled: true, dragHandleClass: 'dcard-drag-handle', ignoreContent: true },
     resizable: { enabled: true },
     pushItems: true,
-    margin: 10,
+    margin: 12,
+    outerMargin: true,
     minCols: 12,
     maxCols: 12,
-    minRows: 1,
+    minRows: 4,
     itemChangeCallback: (item) => this.onGridItemChange(item),
   };
 
@@ -166,12 +198,34 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
         this.filterForm.patchValue(d.global_filters_json as Record<string, string>);
         this.gridItems = d.cards.map((card) => ({
           card,
-          grid: { ...card.layout_json, cardId: card.id },
+          grid: this.toGridItem(card),
           payload: card.snapshot_response_json as { response_type: string; data: Record<string, unknown> },
         }));
+        const maxRow = d.cards.reduce((max, card) => {
+          const layout = card.layout_json ?? {};
+          const y = Number(layout['y'] ?? 0);
+          const rows = Number(layout['rows'] ?? 3);
+          return Math.max(max, y + rows);
+        }, 0);
+        this.options = {
+          ...this.options,
+          minRows: Math.max(maxRow, 4),
+        };
+        setTimeout(() => this.refreshGrid(), 0);
         this.setupAutoRefresh(d.cards);
       },
     });
+  }
+
+  private toGridItem(card: DashboardCard): GridsterItem & { cardId: string } {
+    const layout = card.layout_json ?? {};
+    return {
+      x: Number(layout['x'] ?? 0),
+      y: Number(layout['y'] ?? 0),
+      cols: Number(layout['cols'] ?? 4),
+      rows: Math.max(Number(layout['rows'] ?? 3), 2),
+      cardId: card.id,
+    };
   }
 
   setupAutoRefresh(cards: DashboardCard[]): void {
@@ -185,12 +239,52 @@ export class DashboardCanvasComponent implements OnInit, OnDestroy {
   onGridItemChange(item: GridsterItem): void {
     const cardId = (item as GridsterItem & { cardId?: string }).cardId;
     if (!cardId) return;
-    const layout = { x: item.x ?? 0, y: item.y ?? 0, cols: item.cols ?? 4, rows: item.rows ?? 3 };
+    const layout = {
+      x: item.x ?? 0,
+      y: item.y ?? 0,
+      cols: item.cols ?? 4,
+      rows: Math.max(item.rows ?? 3, 2),
+    };
     this.dashboards.updateLayout(this.dashboardId, cardId, layout).subscribe();
+  }
+
+  private refreshGrid(): void {
+    this.options.api?.optionsChanged?.();
+    this.options.api?.resize?.();
   }
 
   applyFilters(): void {
     this.dashboards.updateFilters(this.dashboardId, this.filterForm.getRawValue()).subscribe();
+  }
+
+  removeCard(item: { card: DashboardCard; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }): void {
+    const label = item.card.title || 'this pinned item';
+    if (!confirm(`Remove "${label}" from this dashboard?`)) return;
+
+    this.dashboards.removeCard(this.dashboardId, item.card.id).subscribe({
+      next: () => {
+        this.gridItems = this.gridItems.filter((entry) => entry.card.id !== item.card.id);
+        const maxRow = this.gridItems.reduce((max, entry) => {
+          const layout = entry.card.layout_json ?? {};
+          const y = Number(layout['y'] ?? 0);
+          const rows = Number(layout['rows'] ?? 3);
+          return Math.max(max, y + rows);
+        }, 0);
+        this.options = { ...this.options, minRows: Math.max(maxRow, 4) };
+        setTimeout(() => this.refreshGrid(), 0);
+      },
+    });
+  }
+
+  renameCard(
+    item: { card: DashboardCard; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } },
+    title: string,
+  ): void {
+    this.dashboards.updateCard(this.dashboardId, item.card.id, { title }).subscribe({
+      next: (card) => {
+        item.card = card;
+      },
+    });
   }
 
   refreshLiveCards(): void {
