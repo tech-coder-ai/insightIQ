@@ -2,7 +2,7 @@ import { SlicePipe } from '@angular/common';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { API_BASE } from '../../core/api.config';
 import { DashboardService } from '../../core/dashboard.service';
@@ -27,7 +27,7 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
     <div class="page">
       <header>
         <h1>Prompt Studio</h1>
-        <p class="subtitle">Create, test, refine, version and share prompt templates bound to data or documents.</p>
+        <p class="subtitle">Create, test, refine, version and share prompt templates. Browse all prompts in <a routerLink="/prompt-library">Prompt Library</a>.</p>
       </header>
 
       <div class="layout">
@@ -255,12 +255,31 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
               }
 
               <section class="panel">
-                <h3>Run history</h3>
+                <div class="run-history-head">
+                  <h3>Run history</h3>
+                  @if (runs.length && selectedDetail?.is_mine) {
+                    <button type="button" class="danger-link" (click)="clearAllRuns()">Clear all</button>
+                  }
+                </div>
+                @if (runs.length === 0) {
+                  <p class="muted">No runs yet. Use <strong>Run prompt</strong> above to test this template.</p>
+                }
                 @for (r of runs; track r.run_id) {
-                  <button type="button" class="run-item" (click)="openRun(r)">
-                    <pre>{{ r.output.slice(0, 140) }}…</pre>
-                    <span class="muted">score {{ r.eval_scores.overall }}</span>
-                  </button>
+                  <div class="run-item">
+                    <button type="button" class="run-open" (click)="openRun(r)">
+                      <pre>{{ r.output.slice(0, 140) }}{{ r.output.length > 140 ? '…' : '' }}</pre>
+                      <span class="muted">score {{ r.eval_scores.overall }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="run-delete"
+                      title="Delete run"
+                      aria-label="Delete run"
+                      (click)="deleteRun(r, $event)"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 }
               </section>
             </div>
@@ -358,10 +377,30 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
         100% { transform: translateX(350%); }
       }
       .scores { display: flex; gap: 16px; margin-top: 12px; font-size: var(--text-sm); color: var(--text-2); }
-      .run-item {
-        display: flex; justify-content: space-between; gap: 12px; align-items: flex-start;
-        margin-bottom: 8px; text-align: left; background: var(--surface-2);
+      .run-history-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+      .run-history-head h3 { margin: 0; }
+      .danger-link {
+        border: none; background: transparent; color: var(--danger, #cf222e); cursor: pointer;
+        font-size: var(--text-sm); font-family: inherit; padding: 0;
       }
+      .danger-link:hover { text-decoration: underline; }
+      .run-item {
+        display: flex; justify-content: space-between; gap: 8px; align-items: stretch;
+        margin-bottom: 8px;
+      }
+      .run-open {
+        flex: 1; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start;
+        text-align: left; background: var(--surface-2); border: 1px solid var(--border);
+        border-radius: var(--radius-md); padding: 10px 12px; cursor: pointer; color: inherit;
+        font-family: inherit;
+      }
+      .run-open:hover { background: var(--surface-3); }
+      .run-delete {
+        width: 36px; flex-shrink: 0; border: 1px solid var(--border-strong);
+        border-radius: var(--radius-md); background: var(--surface-2); color: var(--text-muted);
+        cursor: pointer; font-family: inherit;
+      }
+      .run-delete:hover { color: var(--danger, #cf222e); border-color: var(--danger, #cf222e); background: var(--danger-soft, #ffebe9); }
       .run-item pre { margin: 0; white-space: pre-wrap; font-size: var(--text-xs); font-family: var(--font-mono); flex: 1; }
       pre { white-space: pre-wrap; font-size: var(--text-xs); font-family: var(--font-mono); }
       details summary { cursor: pointer; color: var(--text-2); font-size: var(--text-sm); margin-top: 8px; }
@@ -373,6 +412,7 @@ export class PromptStudioComponent implements OnInit {
   private readonly dashboardService = inject(DashboardService);
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
+  private readonly route = inject(ActivatedRoute);
 
   templates: PromptTemplate[] = [];
   selected: PromptTemplate | null = null;
@@ -423,12 +463,27 @@ export class PromptStudioComponent implements OnInit {
     this.http.get<CollectionOption[]>(`${API_BASE}/talk-to-docs/collections`).subscribe({
       next: (items) => (this.collections = items),
     });
+    this.route.queryParamMap.subscribe((params) => {
+      const templateId = params.get('template');
+      if (templateId && this.templates.some((t) => t.id === templateId)) {
+        const match = this.templates.find((t) => t.id === templateId);
+        if (match) this.select(match);
+      }
+    });
   }
 
   loadTemplates(): void {
-    this.promptService.listTemplates().subscribe({
+    this.promptService.listTemplates({ scope: 'all' }).subscribe({
       next: (items) => {
         this.templates = items;
+        const templateId = this.route.snapshot.queryParamMap.get('template');
+        if (templateId) {
+          const match = items.find((t) => t.id === templateId);
+          if (match) {
+            this.select(match);
+            return;
+          }
+        }
         if (!this.selected && items.length) this.select(items[0]);
       },
     });
@@ -496,11 +551,8 @@ export class PromptStudioComponent implements OnInit {
   }
 
   bindingLabel(bindings: PromptBindings | undefined): string | null {
-    const type = bindings?.type ?? 'none';
-    if (type === 'sql') return 'SQL';
-    if (type === 'rag') return 'RAG';
-    if (type === 'file') return 'File';
-    return null;
+    const label = this.promptService.bindingLabel(bindings);
+    return label === 'Variables only' ? null : label;
   }
 
   renameTemplate(name: string): void {
@@ -652,6 +704,32 @@ export class PromptStudioComponent implements OnInit {
 
   openRun(r: PromptRun): void {
     this.lastRun = r;
+  }
+
+  deleteRun(r: PromptRun, event?: Event): void {
+    event?.stopPropagation();
+    if (!confirm('Delete this run from history?')) return;
+    this.promptService.deleteRun(r.run_id).subscribe({
+      next: () => {
+        this.runs = this.runs.filter((x) => x.run_id !== r.run_id);
+        if (this.lastRun?.run_id === r.run_id) {
+          this.lastRun = this.runs[0] ?? null;
+        }
+      },
+      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Could not delete run'),
+    });
+  }
+
+  clearAllRuns(): void {
+    if (!this.selectedDetail) return;
+    if (!confirm('Delete all run history for this template?')) return;
+    this.promptService.deleteAllRuns(this.selectedDetail.id).subscribe({
+      next: () => {
+        this.runs = [];
+        this.lastRun = null;
+      },
+      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Could not clear run history'),
+    });
   }
 
   share(): void {

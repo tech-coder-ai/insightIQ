@@ -15,12 +15,23 @@ def route_extraction(file_path: str) -> str:
 
 async def extract_document(file_path: str) -> tuple[str, str, float]:
     key = route_extraction(file_path)
+    lower = file_path.lower()
     try:
         importlib.import_module("core.ingestion.extractors.markitdown")
+        importlib.import_module("core.ingestion.extractors.ocr_pdf")
     except ModuleNotFoundError:
         pass
     extractor = EXTRACTORS.create(key)
     text, confidence = await extractor.extract(file_path)
+    if lower.endswith(".pdf") and (confidence < 0.6 or len(text.strip()) < 40):
+        try:
+            ocr_extractor = EXTRACTORS.create("ocr_pdf")
+            ocr_text, ocr_confidence = await ocr_extractor.extract(file_path)
+            if len(ocr_text.strip()) > len(text.strip()):
+                text, confidence = ocr_text, ocr_confidence
+                extractor = ocr_extractor
+        except KeyError:
+            pass
     if confidence < 0.6:
         extractor = EXTRACTORS.create("docling")
         text, confidence = await extractor.extract(file_path)

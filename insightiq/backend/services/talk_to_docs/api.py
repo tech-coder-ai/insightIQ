@@ -4,9 +4,9 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
@@ -19,6 +19,7 @@ from core.ingestion.jobs import (
     run_scrape_ingestion,
 )
 from core.models import ChatMessage, Conversation, Document, DocumentChunk, DocumentCollection
+from core.prompts.access import load_accessible_template
 from core.rag.engine import RagEngine
 from core.rag.profiles import load_profile
 from core.request_context import RequestContext, require_auth, require_role
@@ -52,6 +53,27 @@ class AskDocsRequest(BaseModel):
     question: str = Field(min_length=1)
     conversation_id: uuid.UUID | None = None
     profile_override: str | None = None
+    prompt_template_id: uuid.UUID | None = None
+
+
+class ChunkDetailResponse(BaseModel):
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    filename: str
+    page_number: int | None
+    char_start: int
+    char_end: int
+    text: str
+    excerpt: str
+
+
+class DocumentViewResponse(BaseModel):
+    document_id: uuid.UUID
+    filename: str
+    content: str
+    highlight_start: int | None = None
+    highlight_end: int | None = None
+    page_number: int | None = None
 
 
 class AskDocsResponse(BaseModel):
@@ -226,6 +248,59 @@ async def get_ingestion_job(
     return job
 
 
+@router.get("/chunks/{chunk_id}", response_model=ChunkDetailResponse)
+async def get_chunk_detail(
+    chunk_id: str,
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> ChunkDetailResponse:
+    row = await _resolve_chunk_row(db, ctx.tenant_id, chunk_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="chunk not found")
+    chunk, doc = row
+    text = chunk.text.strip()
+    excerpt = text if len(text) <= 600 else text[:597] + "..."
+    return ChunkDetailResponse(
+        chunk_id=chunk.id,
+        document_id=doc.id,
+        filename=doc.filename,
+        page_number=chunk.page_number,
+        char_start=chunk.char_start,
+        char_end=chunk.char_end,
+        text=text,
+        excerpt=excerpt,
+    )
+
+
+@router.get("/documents/{document_id}", response_model=DocumentViewResponse)
+async def get_document_view(
+    document_id: uuid.UUID,
+    char_start: int | None = Query(default=None, ge=0),
+    char_end: int | None = Query(default=None, ge=0),
+    page_number: int | None = Query(default=None, ge=1),
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentViewResponse:
+    doc = await _get_document(db, ctx.tenant_id, document_id)
+    content = doc.content_markdown or ""
+    highlight_start: int | None = None
+    highlight_end: int | None = None
+    if char_start is not None and char_end is not None and char_end > char_start:
+        highlight_start = min(char_start, len(content))
+        highlight_end = min(char_end, len(content))
+        if highlight_end <= highlight_start:
+            highlight_start = None
+            highlight_end = None
+    return DocumentViewResponse(
+        document_id=doc.id,
+        filename=doc.filename,
+        content=content,
+        highlight_start=highlight_start,
+        highlight_end=highlight_end,
+        page_number=page_number,
+    )
+
+
 @router.post("/ask", response_model=AskDocsResponse)
 async def ask_documents(
     req: AskDocsRequest,
@@ -237,18 +312,27 @@ async def ask_documents(
     profile_cfg = load_profile(profile_name)
     conversation_id = req.conversation_id or uuid.uuid4()
 
+    system_prompt_override: str | None = None
+    generation_instructions: str | None = None
+    if req.prompt_template_id:
+        _tmpl, version = await load_accessible_template(db, ctx, req.prompt_template_id)
+        system_prompt_override = version.system_prompt or None
+        generation_instructions = version.template_body or None
+
     engine = RagEngine()
     result = await engine.run(
         query=req.question,
         tenant_id=str(ctx.tenant_id),
         collection_ids=[str(col.id)],
         profile_name=profile_name,
+        system_prompt_override=system_prompt_override,
+        generation_instructions=generation_instructions,
     )
 
     final = result.get("final") or {}
     answer = final.get("answer", "")
     answer_html = final.get("answer_html", answer)
-    highlights = final.get("highlight_spans", [])
+    highlights = await _enrich_highlights(db, ctx.tenant_id, final.get("highlight_spans", []))
 
     await _ensure_conversation(db, ctx, conversation_id, col.id, req.question)
     snapshot = profile_cfg.model_dump()
@@ -259,7 +343,11 @@ async def ask_documents(
         conversation_id=conversation_id,
         role="user",
         content=req.question,
-        metadata_json={"collection_id": str(col.id), "rag_profile_snapshot_json": snapshot},
+        metadata_json={
+            "collection_id": str(col.id),
+            "rag_profile_snapshot_json": snapshot,
+            "prompt_template_id": str(req.prompt_template_id) if req.prompt_template_id else None,
+        },
     )
     assistant_msg = ChatMessage(
         tenant_id=ctx.tenant_id,
@@ -303,6 +391,23 @@ async def _get_collection(
     return col
 
 
+async def _get_document(
+    db: AsyncSession, tenant_id: uuid.UUID, document_id: uuid.UUID
+) -> Document:
+    res = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.tenant_id == tenant_id,
+        )
+    )
+    doc = res.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    if not (doc.content_markdown or "").strip():
+        raise HTTPException(status_code=404, detail="document has no readable content")
+    return doc
+
+
 async def _ensure_conversation(
     db: AsyncSession,
     ctx: RequestContext,
@@ -332,3 +437,118 @@ async def _ensure_conversation(
         )
     elif conv.datasource_id is None:
         conv.datasource_id = collection_id
+
+
+async def _enrich_highlights(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    highlights: list[dict],
+) -> list[dict]:
+    if not highlights:
+        return []
+
+    db_ids: list[uuid.UUID] = []
+    composite_pairs: list[tuple[uuid.UUID, int]] = []
+    for item in highlights:
+        parsed_db, parsed_pair = _parse_chunk_key(str(item.get("chunk_id", "")))
+        if parsed_db is not None:
+            db_ids.append(parsed_db)
+        if parsed_pair is not None:
+            composite_pairs.append(parsed_pair)
+
+    meta: dict[str, tuple[str, str, int | None]] = {}
+
+    if db_ids:
+        res = await db.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(DocumentChunk.id.in_(db_ids), DocumentChunk.tenant_id == tenant_id)
+        )
+        for chunk, doc in res.all():
+            _store_chunk_meta(meta, chunk, doc)
+
+    if composite_pairs:
+        res = await db.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                DocumentChunk.tenant_id == tenant_id,
+                tuple_(DocumentChunk.document_id, DocumentChunk.chunk_index).in_(composite_pairs),
+            )
+        )
+        for chunk, doc in res.all():
+            _store_chunk_meta(meta, chunk, doc)
+
+    enriched: list[dict] = []
+    for item in highlights:
+        row = dict(item)
+        chunk_id = str(row.get("chunk_id", ""))
+        if chunk_id in meta:
+            filename, text, page_number = meta[chunk_id]
+            row.setdefault("filename", filename)
+            row.setdefault("page_number", page_number)
+            if not row.get("text_snippet"):
+                snippet = text.replace("\n", " ")
+                row["text_snippet"] = snippet[:280] + ("..." if len(snippet) > 280 else "")
+        enriched.append(row)
+    return enriched
+
+
+def _parse_chunk_key(chunk_id: str) -> tuple[uuid.UUID | None, tuple[uuid.UUID, int] | None]:
+    if not chunk_id:
+        return None, None
+    try:
+        return uuid.UUID(chunk_id), None
+    except ValueError:
+        pass
+    if ":" in chunk_id:
+        doc_part, idx_part = chunk_id.rsplit(":", 1)
+        try:
+            return None, (uuid.UUID(doc_part), int(idx_part))
+        except (ValueError, TypeError):
+            pass
+    return None, None
+
+
+def _store_chunk_meta(
+    meta: dict[str, tuple[str, str, int | None]],
+    chunk: DocumentChunk,
+    doc: Document,
+) -> None:
+    info = (doc.filename, chunk.text.strip(), chunk.page_number)
+    meta[str(chunk.id)] = info
+    meta[f"{chunk.document_id}:{chunk.chunk_index}"] = info
+
+
+async def _resolve_chunk_row(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    chunk_id: str,
+) -> tuple[DocumentChunk, Document] | None:
+    parsed_db, parsed_pair = _parse_chunk_key(chunk_id)
+    if parsed_db is not None:
+        res = await db.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(DocumentChunk.id == parsed_db, DocumentChunk.tenant_id == tenant_id)
+        )
+        row = res.first()
+        if row is not None:
+            return row
+
+    if parsed_pair is not None:
+        doc_id, chunk_index = parsed_pair
+        res = await db.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                DocumentChunk.document_id == doc_id,
+                DocumentChunk.chunk_index == chunk_index,
+                DocumentChunk.tenant_id == tenant_id,
+            )
+        )
+        row = res.first()
+        if row is not None:
+            return row
+
+    return None

@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.deps import get_db
@@ -28,6 +28,8 @@ class TemplateResponse(BaseModel):
     description: str
     bindings_json: dict
     is_shared: bool
+    is_mine: bool = False
+    owner_user_id: uuid.UUID | None = None
     latest_version: int | None = None
 
 
@@ -122,24 +124,37 @@ async def create_template(
         description=tmpl.description,
         bindings_json=tmpl.bindings_json,
         is_shared=tmpl.is_shared,
+        is_mine=True,
+        owner_user_id=tmpl.owner_user_id,
         latest_version=1,
     )
 
 
 @router.get("/templates", response_model=list[TemplateResponse])
 async def list_templates(
+    scope: str = Query(default="all", pattern="^(all|mine|shared)$"),
+    binding: str | None = Query(default=None, pattern="^(none|sql|rag|file)$"),
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> list[TemplateResponse]:
-    res = await db.execute(
-        select(PromptTemplate).where(
-            PromptTemplate.tenant_id == ctx.tenant_id,
-            or_(PromptTemplate.owner_user_id == ctx.user_id, PromptTemplate.is_shared.is_(True)),
+    conditions = [PromptTemplate.tenant_id == ctx.tenant_id]
+    if scope == "mine":
+        conditions.append(PromptTemplate.owner_user_id == ctx.user_id)
+    elif scope == "shared":
+        conditions.append(PromptTemplate.is_shared.is_(True))
+        conditions.append(PromptTemplate.owner_user_id != ctx.user_id)
+    else:
+        conditions.append(
+            or_(PromptTemplate.owner_user_id == ctx.user_id, PromptTemplate.is_shared.is_(True))
         )
-    )
+
+    res = await db.execute(select(PromptTemplate).where(*conditions))
     templates = res.scalars().all()
     out: list[TemplateResponse] = []
     for tmpl in templates:
+        binding_type = (tmpl.bindings_json or {}).get("type", "none")
+        if binding and binding_type != binding:
+            continue
         ver_res = await db.execute(
             select(func.max(PromptVersion.version_number)).where(PromptVersion.template_id == tmpl.id)
         )
@@ -151,9 +166,12 @@ async def list_templates(
                 description=tmpl.description,
                 bindings_json=tmpl.bindings_json,
                 is_shared=tmpl.is_shared,
+                is_mine=tmpl.owner_user_id == ctx.user_id,
+                owner_user_id=tmpl.owner_user_id,
                 latest_version=latest,
             )
         )
+    out.sort(key=lambda t: (not t.is_mine, t.name.lower()))
     return out
 
 
@@ -174,6 +192,8 @@ async def get_template(
         description=tmpl.description,
         bindings_json=tmpl.bindings_json,
         is_shared=tmpl.is_shared,
+        is_mine=tmpl.owner_user_id == ctx.user_id,
+        owner_user_id=tmpl.owner_user_id,
         latest_version=ver_res.scalar_one(),
         latest_version_id=version.id,
         template_body=version.template_body,
@@ -206,6 +226,8 @@ async def update_template(
         description=tmpl.description,
         bindings_json=tmpl.bindings_json,
         is_shared=tmpl.is_shared,
+        is_mine=True,
+        owner_user_id=tmpl.owner_user_id,
         latest_version=ver_res.scalar_one(),
     )
 
@@ -351,6 +373,45 @@ async def list_runs(
     ]
 
 
+@router.delete("/runs/{run_id}")
+async def delete_run(
+    run_id: uuid.UUID,
+    ctx: RequestContext = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    res = await db.execute(
+        select(PromptRun, PromptTemplate)
+        .join(PromptTemplate, PromptTemplate.id == PromptRun.template_id)
+        .where(PromptRun.id == run_id, PromptRun.tenant_id == ctx.tenant_id)
+    )
+    row = res.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    run, tmpl = row
+    if run.user_id != ctx.user_id and tmpl.owner_user_id != ctx.user_id:
+        raise HTTPException(status_code=403, detail="not allowed to delete this run")
+    await db.delete(run)
+    await db.commit()
+    return {"status": "deleted", "run_id": str(run_id)}
+
+
+@router.delete("/templates/{template_id}/runs")
+async def delete_all_runs(
+    template_id: uuid.UUID,
+    ctx: RequestContext = Depends(require_role(Role.editor)),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int | str]:
+    tmpl = await _get_template(db, ctx, template_id, owner_only=True)
+    result = await db.execute(
+        delete(PromptRun).where(
+            PromptRun.template_id == tmpl.id,
+            PromptRun.tenant_id == ctx.tenant_id,
+        )
+    )
+    await db.commit()
+    return {"status": "deleted", "count": result.rowcount or 0}
+
+
 @router.patch("/templates/{template_id}/share", response_model=TemplateResponse)
 async def share_template(
     template_id: uuid.UUID,
@@ -370,6 +431,8 @@ async def share_template(
         description=tmpl.description,
         bindings_json=tmpl.bindings_json,
         is_shared=tmpl.is_shared,
+        is_mine=True,
+        owner_user_id=tmpl.owner_user_id,
         latest_version=ver_res.scalar_one(),
     )
 

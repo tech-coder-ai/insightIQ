@@ -236,12 +236,16 @@ async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[st
 
     max_chunks = int(cfg.generation.get("max_context_chunks", 6))
     context_block = _build_context_block(chunks, max_chunks)
+    instructions = state.get("generation_instructions") or ""
     user_prompt = f"Context passages:\n\n{context_block}\n\nQuestion: {query}"
+    if instructions.strip():
+        user_prompt += f"\n\nAdditional instructions:\n{instructions.strip()}"
 
+    system_prompt = state.get("system_prompt_override") or _GROUNDED_SYSTEM
     llm = LLMProviderFactory.create(provider_key)
     try:
         answer = await llm.complete(
-            system=_GROUNDED_SYSTEM,
+            system=system_prompt,
             messages=[LLMMessage(role="user", content=user_prompt)],
         )
         if not answer.strip():

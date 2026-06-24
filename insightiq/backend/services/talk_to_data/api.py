@@ -31,6 +31,7 @@ from core.deps import get_db
 from core.llm.base import LLMMessage
 from core.llm.factory import LLMProviderFactory
 from core.models import ChatMessage, Conversation, DataSource
+from core.prompts.access import load_accessible_template
 from core.request_context import RequestContext, require_auth, require_role
 from core.response.classifier import classify_and_format
 from core.response.display import chart_date_sql_rules
@@ -167,6 +168,7 @@ class AskRequest(BaseModel):
     datasource_id: uuid.UUID
     question: str = Field(min_length=1)
     conversation_id: uuid.UUID | None = None
+    prompt_template_id: uuid.UUID | None = None
 
 
 class AskResponse(BaseModel):
@@ -686,6 +688,15 @@ async def ask(
     system_prompt = _build_sql_system_prompt(
         ds.dialect, schema, relationships, glossary, question=req.question
     )
+    if req.prompt_template_id:
+        _tmpl, version = await load_accessible_template(db, ctx, req.prompt_template_id)
+        extras: list[str] = []
+        if version.system_prompt.strip():
+            extras.append(f"Analyst instructions:\n{version.system_prompt.strip()}")
+        if version.template_body.strip():
+            extras.append(f"Response formatting instructions:\n{version.template_body.strip()}")
+        if extras:
+            system_prompt = f"{system_prompt}\n\n" + "\n\n".join(extras)
 
     async with open_connector(ds.db_type, ds.connection_config_json) as connector:
         if req.conversation_id and _is_affirmative(req.question):

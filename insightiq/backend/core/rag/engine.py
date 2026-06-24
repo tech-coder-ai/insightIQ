@@ -14,6 +14,8 @@ class RagEngine:
         collection_ids: list[str],
         profile_name: str = "naive",
         conversation_history: list[Message] | None = None,
+        system_prompt_override: str | None = None,
+        generation_instructions: str | None = None,
     ) -> dict:
         cfg = load_profile(profile_name)
         graph = build_graph(cfg)
@@ -27,5 +29,7 @@ class RagEngine:
             "profile": to_rag_profile(cfg).raw,
             "retrieval_round": 0,
             "trace": {},
+            "system_prompt_override": system_prompt_override,
+            "generation_instructions": generation_instructions,
         }
         return await graph.ainvoke(initial)

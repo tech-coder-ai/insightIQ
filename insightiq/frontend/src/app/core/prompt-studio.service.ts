@@ -20,6 +20,8 @@ export type PromptTemplate = {
   description: string;
   bindings_json: PromptBindings;
   is_shared: boolean;
+  is_mine?: boolean;
+  owner_user_id?: string | null;
   latest_version: number | null;
 };
 
@@ -48,12 +50,23 @@ export type PromptRun = {
   context_preview?: string;
 };
 
+export type PromptListParams = {
+  scope?: 'all' | 'mine' | 'shared';
+  binding?: 'none' | 'sql' | 'rag' | 'file';
+};
+
 @Injectable({ providedIn: 'root' })
 export class PromptStudioService {
   private readonly http = inject(HttpClient);
 
-  listTemplates(): Observable<PromptTemplate[]> {
-    return this.http.get<PromptTemplate[]>(`${API_BASE}/prompt-studio/templates`);
+  listTemplates(params: PromptListParams = {}): Observable<PromptTemplate[]> {
+    const query = new URLSearchParams();
+    if (params.scope) query.set('scope', params.scope);
+    if (params.binding) query.set('binding', params.binding);
+    const qs = query.toString();
+    return this.http.get<PromptTemplate[]>(
+      `${API_BASE}/prompt-studio/templates${qs ? `?${qs}` : ''}`,
+    );
   }
 
   getTemplate(id: string): Observable<PromptTemplateDetail> {
@@ -108,6 +121,18 @@ export class PromptStudioService {
     return this.http.get<PromptRun[]>(`${API_BASE}/prompt-studio/templates/${templateId}/runs`);
   }
 
+  deleteRun(runId: string): Observable<{ status: string; run_id: string }> {
+    return this.http.delete<{ status: string; run_id: string }>(
+      `${API_BASE}/prompt-studio/runs/${runId}`,
+    );
+  }
+
+  deleteAllRuns(templateId: string): Observable<{ status: string; count: number }> {
+    return this.http.delete<{ status: string; count: number }>(
+      `${API_BASE}/prompt-studio/templates/${templateId}/runs`,
+    );
+  }
+
   share(templateId: string, isShared = true): Observable<PromptTemplate> {
     return this.http.patch<PromptTemplate>(
       `${API_BASE}/prompt-studio/templates/${templateId}/share?is_shared=${isShared}`,
@@ -120,5 +145,13 @@ export class PromptStudioService {
       dashboard_id: dashboardId,
       title,
     });
+  }
+
+  bindingLabel(bindings: PromptBindings | undefined): string {
+    const type = bindings?.type ?? 'none';
+    if (type === 'sql') return 'SQL';
+    if (type === 'rag') return 'RAG';
+    if (type === 'file') return 'File';
+    return 'Variables only';
   }
 }

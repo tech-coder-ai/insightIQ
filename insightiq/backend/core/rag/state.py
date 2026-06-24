@@ -64,6 +64,9 @@ class HighlightSpan:
     color: str
     relevance_score: float
     rerank_score: float | None = None
+    ref_index: int = 0
+    text_snippet: str = ""
+    filename: str = ""
 
 
 @dataclass
@@ -109,6 +112,8 @@ class RagGraphState(TypedDict, total=False):
     retrieval_round: int
     final: Any
     trace: dict[str, Any]
+    system_prompt_override: str | None
+    generation_instructions: str | None
 
 
 @dataclass

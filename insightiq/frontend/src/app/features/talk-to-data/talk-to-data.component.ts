@@ -7,6 +7,7 @@ import { DashboardService, Dashboard } from '../../core/dashboard.service';
 import { API_BASE } from '../../core/api.config';
 import { ResponseRendererComponent } from '../../shared/response-renderer.component';
 import { SchemaTreeComponent } from '../../shared/schema-tree.component';
+import { PromptPickerComponent } from '../../shared/prompt-picker.component';
 
 type DataSource = { id: string; name: string; db_type: string; description?: string; metadata_status?: string };
 type Schema = { tables: { name: string; columns: { name: string; data_type: string }[] }[] };
@@ -51,7 +52,7 @@ type ChatMessageDto = {
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, FormsModule, ResponseRendererComponent, SchemaTreeComponent, RouterLink],
+  imports: [ReactiveFormsModule, FormsModule, ResponseRendererComponent, SchemaTreeComponent, PromptPickerComponent, RouterLink],
   template: `
     <div class="page">
       <div class="page-header">
@@ -232,14 +233,22 @@ type ChatMessageDto = {
               </div>
 
               <form class="input-bar" [formGroup]="askForm" (ngSubmit)="ask()">
-                <input
-                  formControlName="question"
-                  placeholder="e.g. Show monthly revenue by region as a bar chart"
-                  autocomplete="off"
-                />
-                <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading() || !selectedSourceId()">
-                  Ask
-                </button>
+                <div class="input-stack">
+                  <app-prompt-picker
+                    [selectedId]="selectedPromptId()"
+                    (selectedIdChange)="selectedPromptId.set($event)"
+                  />
+                  <div class="input-row">
+                    <input
+                      formControlName="question"
+                      placeholder="e.g. Show monthly revenue by region as a bar chart"
+                      autocomplete="off"
+                    />
+                    <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading() || !selectedSourceId()">
+                      Ask
+                    </button>
+                  </div>
+                </div>
               </form>
             }
           </div>
@@ -521,6 +530,8 @@ type ChatMessageDto = {
       border-top: 1px solid var(--border);
       background: var(--surface-2);
     }
+    .input-stack { flex: 1; display: grid; gap: 8px; }
+    .input-row { display: flex; gap: 10px; }
     .input-bar input {
       flex: 1; padding: 10px 14px; border-radius: var(--radius-md);
       border: 1px solid var(--border-strong);
@@ -571,6 +582,7 @@ export class TalkToDataComponent implements OnInit {
   readonly schemaLoading = signal(false);
   readonly messages = signal<Message[]>([]);
   readonly loading = signal(false);
+  readonly selectedPromptId = signal<string | null>(null);
   readonly pinning = signal(false);
   readonly copied = signal<string | null>(null);
   readonly pinModalOpen = signal(false);
@@ -777,6 +789,7 @@ export class TalkToDataComponent implements OnInit {
       datasource_id: this.selectedSourceId(),
       question: q,
       conversation_id: this.conversationId,
+      prompt_template_id: this.selectedPromptId(),
     }).subscribe({
       next: (res) => {
         const wasNew = this.activeConversationId() !== res.conversation_id;

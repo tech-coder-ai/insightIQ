@@ -4,9 +4,39 @@ import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angu
 
 import { API_BASE } from '../../core/api.config';
 import { MarkdownDirective } from '../../core/markdown.directive';
+import { PromptPickerComponent } from '../../shared/prompt-picker.component';
 
 type Collection = { id: string; name: string; rag_profile: string; doc_count?: number };
-type HighlightSpan = { chunk_id: string; document_id: string; char_start: number; char_end: number; color: string };
+type HighlightSpan = {
+  chunk_id: string;
+  document_id: string;
+  char_start: number;
+  char_end: number;
+  color: string;
+  ref_index?: number;
+  text_snippet?: string;
+  filename?: string;
+  page_number?: number | null;
+};
+type ChunkDetail = {
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  page_number: number | null;
+  char_start: number;
+  char_end: number;
+  text: string;
+  excerpt: string;
+};
+type DocumentView = {
+  document_id: string;
+  filename: string;
+  content: string;
+  highlight_start: number | null;
+  highlight_end: number | null;
+  page_number: number | null;
+};
+type DocumentHighlightParts = { before: string; highlight: string; after: string };
 type AskResponse = { conversation_id: string; answer: string; answer_html: string; highlight_spans: HighlightSpan[] };
 type Message = { role: 'user' | 'assistant'; question?: string; answerMd?: string; highlights?: HighlightSpan[]; error?: string };
 type Conversation = { id: string; title: string; starred: boolean; updated_at: string; datasource_id: string | null };
@@ -45,7 +75,7 @@ const RAG_PROFILES = [
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, FormsModule, MarkdownDirective],
+  imports: [ReactiveFormsModule, FormsModule, MarkdownDirective, PromptPickerComponent],
   template: `
     <div class="page">
       <div class="page-header">
@@ -279,14 +309,37 @@ const RAG_PROFILES = [
                         } @else {
                           <div class="answer markdown" [appMarkdown]="msg.answerMd || ''"></div>
                           @if (msg.highlights && msg.highlights.length) {
-                            <details class="sources">
-                              <summary>{{ msg.highlights.length }} source chunk{{ msg.highlights.length > 1 ? 's' : '' }}</summary>
+                            <div class="sources">
+                              <div class="sources-head">References</div>
                               @for (h of msg.highlights; track h.chunk_id) {
-                                <div class="highlight" [style.borderLeftColor]="h.color">
-                                  <span>doc {{ h.document_id.slice(0, 8) }}… · chars {{ h.char_start }}–{{ h.char_end }}</span>
+                                <div class="source-entry">
+                                  <button
+                                    type="button"
+                                    class="source-card"
+                                    [style.borderLeftColor]="h.color"
+                                    (click)="openSourcePreview(h.chunk_id)"
+                                  >
+                                    <span class="source-ref">[{{ h.ref_index || $index + 1 }}]</span>
+                                    <span class="source-meta">
+                                      {{ h.filename || ('Document ' + h.document_id.slice(0, 8)) }}
+                                      @if (h.page_number) { · page {{ h.page_number }} }
+                                    </span>
+                                    @if (h.text_snippet) {
+                                      <span class="source-snippet">"{{ h.text_snippet }}"</span>
+                                    }
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="source-doc-btn"
+                                    title="View highlighted passage in document"
+                                    aria-label="View highlighted passage in document"
+                                    (click)="openDocumentView(h)"
+                                  >
+                                    📄 View in document
+                                  </button>
                                 </div>
                               }
-                            </details>
+                            </div>
                           }
                         }
                       </div>
@@ -309,18 +362,75 @@ const RAG_PROFILES = [
               </div>
 
               <form class="input-bar" [formGroup]="askForm" (ngSubmit)="ask()">
-                <input
-                  formControlName="question"
-                  placeholder="Ask anything about your documents…"
-                  autocomplete="off"
-                />
-                <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading()">Ask</button>
+                <div class="input-stack">
+                  <app-prompt-picker
+                    [selectedId]="selectedPromptId()"
+                    (selectedIdChange)="selectedPromptId.set($event)"
+                  />
+                  <div class="input-row">
+                    <input
+                      formControlName="question"
+                      placeholder="Ask anything about your documents…"
+                      autocomplete="off"
+                    />
+                    <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading()">Ask</button>
+                  </div>
+                </div>
               </form>
             }
           </div>
         </div>
       }
     </div>
+
+    @if (documentViewOpen()) {
+      <div class="modal-backdrop" (click)="closeDocumentView()">
+        <div class="modal doc-view-modal" (click)="$event.stopPropagation()">
+          <div class="modal-head">
+            <h2>{{ documentView()?.filename ?? 'Document' }}</h2>
+            <button type="button" class="icon-btn" (click)="closeDocumentView()">✕</button>
+          </div>
+          @if (documentViewLoading()) {
+            <p class="modal-hint">Loading document…</p>
+          } @else if (documentView()) {
+            <p class="preview-meta">
+              @if (documentView()!.page_number) { Page {{ documentView()!.page_number }} · }
+              @if (documentView()!.highlight_start != null && documentView()!.highlight_end != null) {
+                Highlighted characters {{ documentView()!.highlight_start }}–{{ documentView()!.highlight_end }}
+              }
+            </p>
+            <div class="doc-view-scroll">
+              @if (documentHighlightParts()) {
+                <pre class="doc-view-text"><span>{{ documentHighlightParts()!.before }}</span><mark id="chunk-highlight" class="chunk-highlight">{{ documentHighlightParts()!.highlight }}</mark><span>{{ documentHighlightParts()!.after }}</span></pre>
+              } @else {
+                <pre class="doc-view-text">{{ documentView()!.content }}</pre>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    }
+
+    @if (sourcePreviewOpen()) {
+      <div class="modal-backdrop" (click)="closeSourcePreview()">
+        <div class="modal preview-modal" (click)="$event.stopPropagation()">
+          <div class="modal-head">
+            <h2>Source preview</h2>
+            <button type="button" class="icon-btn" (click)="closeSourcePreview()">✕</button>
+          </div>
+          @if (sourcePreviewLoading()) {
+            <p class="modal-hint">Loading excerpt…</p>
+          } @else if (sourcePreview()) {
+            <p class="preview-meta">
+              <strong>{{ sourcePreview()!.filename }}</strong>
+              @if (sourcePreview()!.page_number) { · Page {{ sourcePreview()!.page_number }} }
+              · Characters {{ sourcePreview()!.char_start }}–{{ sourcePreview()!.char_end }}
+            </p>
+            <pre class="preview-text">{{ sourcePreview()!.text }}</pre>
+          }
+        </div>
+      </div>
+    }
   `,
   styles: [`
     .page { max-width: 1140px; }
@@ -496,12 +606,28 @@ const RAG_PROFILES = [
     }
     .answer { line-height: 1.7; font-size: var(--text-base); }
     .answer :global(cite) { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
-    .sources summary { cursor: pointer; font-size: var(--text-xs); color: var(--text-muted); }
-    .highlight {
-      padding: 6px 10px; border-left: 3px solid;
-      margin-top: 5px; background: var(--surface-3);
-      border-radius: 0 6px 6px 0; font-size: var(--text-xs); color: var(--text-2);
+    .sources { display: grid; gap: 8px; margin-top: 4px; }
+    .sources-head { font-size: var(--text-xs); color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+    .source-entry { display: grid; gap: 6px; }
+    .source-card {
+      display: grid; gap: 4px; text-align: left; width: 100%; padding: 10px 12px;
+      border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-md);
+      background: var(--surface); cursor: pointer; font-family: inherit;
+      transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
     }
+    .source-card:hover { background: var(--surface-3); border-color: var(--border-strong); }
+    .source-doc-btn {
+      justify-self: start; display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+      background: var(--surface-2); color: var(--text-2); cursor: pointer;
+      font-size: var(--text-xs); font-family: inherit; padding: 5px 10px;
+    }
+    .source-doc-btn:hover {
+      color: var(--primary-text); border-color: var(--primary); background: var(--primary-soft);
+    }
+    .source-ref { font-size: var(--text-xs); font-weight: 700; color: var(--primary-text); }
+    .source-meta { font-size: var(--text-xs); color: var(--text-2); }
+    .source-snippet { font-size: var(--text-sm); color: var(--text); line-height: 1.5; }
     .error { color: var(--danger); font-size: var(--text-sm); }
 
     .thinking { padding: 16px !important; flex-direction: row !important; }
@@ -519,6 +645,8 @@ const RAG_PROFILES = [
       border-top: 1px solid var(--border);
       background: var(--surface-2);
     }
+    .input-stack { flex: 1; display: grid; gap: 8px; }
+    .input-row { display: flex; gap: 10px; }
     .input-bar input {
       flex: 1; padding: 10px 14px; border-radius: var(--radius-md);
       border: 1px solid var(--border-strong);
@@ -676,6 +804,40 @@ const RAG_PROFILES = [
       font-size: var(--text-sm); font-family: inherit;
     }
     .rename-input:focus { outline: none; box-shadow: 0 0 0 3px var(--primary-soft); }
+
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 1000;
+      display: grid; place-items: center; padding: var(--space-6);
+    }
+    .modal {
+      width: min(720px, 100%); max-height: 85vh; overflow: auto;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: var(--space-5); box-shadow: var(--shadow-lg);
+    }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: var(--space-4); }
+    .modal-head h2 { margin: 0; font-size: var(--text-lg); }
+    .modal-hint { color: var(--text-muted); font-size: var(--text-sm); }
+    .preview-meta { margin: 0 0 12px; color: var(--text-2); font-size: var(--text-sm); }
+    .preview-text {
+      margin: 0; white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--text-sm);
+      background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: var(--space-4); line-height: 1.6;
+    }
+    .doc-view-modal { width: min(900px, 100%); }
+    .doc-view-scroll {
+      max-height: 60vh; overflow: auto; border: 1px solid var(--border);
+      border-radius: var(--radius-md); background: var(--surface-2);
+    }
+    .doc-view-text {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-family: var(--font-mono); font-size: var(--text-sm); line-height: 1.65;
+      padding: var(--space-4);
+    }
+    .chunk-highlight {
+      background: color-mix(in srgb, var(--warning, #d29922) 35%, transparent);
+      color: var(--text); padding: 0 2px; border-radius: 2px;
+      box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--warning, #d29922) 70%, transparent);
+    }
   `],
 })
 export class TalkToDocsComponent implements OnInit, OnDestroy {
@@ -686,6 +848,26 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
   readonly selectedCollection = signal<Collection | null>(null);
   readonly messages = signal<Message[]>([]);
   readonly loading = signal(false);
+  readonly selectedPromptId = signal<string | null>(null);
+  readonly sourcePreview = signal<ChunkDetail | null>(null);
+  readonly sourcePreviewLoading = signal(false);
+  readonly sourcePreviewOpen = signal(false);
+  readonly documentView = signal<DocumentView | null>(null);
+  readonly documentViewLoading = signal(false);
+  readonly documentViewOpen = signal(false);
+  readonly documentHighlightParts = computed((): DocumentHighlightParts | null => {
+    const doc = this.documentView();
+    if (!doc || doc.highlight_start == null || doc.highlight_end == null) return null;
+    const content = doc.content;
+    const start = Math.max(0, Math.min(doc.highlight_start, content.length));
+    const end = Math.max(start, Math.min(doc.highlight_end, content.length));
+    if (end <= start) return null;
+    return {
+      before: content.slice(0, start),
+      highlight: content.slice(start, end),
+      after: content.slice(end),
+    };
+  });
   readonly showNewCollection = signal(false);
   readonly colSaving = signal(false);
   readonly colStatus = signal('');
@@ -773,13 +955,20 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     if (!confirm(`Delete collection "${c.name}"? This permanently removes its documents and index.`)) return;
     this.http.delete(`${API_BASE}/talk-to-docs/collections/${c.id}`).subscribe({
       next: () => {
+        this.collections.update((list) => list.filter((x) => x.id !== c.id));
         if (this.selectedCollection()?.id === c.id) {
           this.selectedCollection.set(null);
           this.messages.set([]);
+          this.conversations.set([]);
+          this.conversationId = null;
+          this.activeConversationId.set(null);
           this.stopPolling();
           this.job.set(null);
         }
         this.loadCollections();
+      },
+      error: (err: { error?: { detail?: string } }) => {
+        alert(err?.error?.detail ?? 'Could not delete collection.');
       },
     });
   }
@@ -944,6 +1133,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
       collection_id: this.selectedCollection()!.id,
       question: q,
       conversation_id: this.conversationId,
+      prompt_template_id: this.selectedPromptId(),
     }).subscribe({
       next: (res) => {
         const wasNew = this.activeConversationId() !== res.conversation_id;
@@ -988,5 +1178,77 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
       this.copied.set(key);
       setTimeout(() => { if (this.copied() === key) this.copied.set(null); }, 1500);
     });
+  }
+
+  openSourcePreview(chunkId: string): void {
+    this.documentViewOpen.set(false);
+    this.sourcePreview.set(null);
+    this.sourcePreviewOpen.set(true);
+    this.sourcePreviewLoading.set(true);
+    this.http.get<ChunkDetail>(`${API_BASE}/talk-to-docs/chunks/${encodeURIComponent(chunkId)}`).subscribe({
+      next: (detail) => {
+        this.sourcePreview.set(detail);
+        this.sourcePreviewLoading.set(false);
+      },
+      error: () => {
+        this.sourcePreviewLoading.set(false);
+        alert('Could not load source excerpt.');
+      },
+    });
+  }
+
+  openDocumentView(h: HighlightSpan): void {
+    this.sourcePreviewOpen.set(false);
+    this.documentView.set(null);
+    this.documentViewOpen.set(true);
+    this.documentViewLoading.set(true);
+
+    const loadDocument = (span: HighlightSpan): void => {
+      const params = new URLSearchParams({
+        char_start: String(span.char_start),
+        char_end: String(span.char_end),
+      });
+      if (span.page_number) params.set('page_number', String(span.page_number));
+      this.http
+        .get<DocumentView>(`${API_BASE}/talk-to-docs/documents/${span.document_id}?${params.toString()}`)
+        .subscribe({
+          next: (doc) => {
+            this.documentView.set(doc);
+            this.documentViewLoading.set(false);
+            window.setTimeout(() => {
+              document.getElementById('chunk-highlight')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 50);
+          },
+          error: (err: { error?: { detail?: string } }) => {
+            this.documentViewLoading.set(false);
+            alert(err?.error?.detail ?? 'Could not load document.');
+          },
+        });
+    };
+
+    if (h.char_end > h.char_start) {
+      loadDocument(h);
+      return;
+    }
+
+    this.http.get<ChunkDetail>(`${API_BASE}/talk-to-docs/chunks/${encodeURIComponent(h.chunk_id)}`).subscribe({
+      next: (detail) => loadDocument({ ...h, char_start: detail.char_start, char_end: detail.char_end, page_number: detail.page_number }),
+      error: () => {
+        this.documentViewLoading.set(false);
+        alert('Could not resolve source location in document.');
+      },
+    });
+  }
+
+  closeDocumentView(): void {
+    this.documentView.set(null);
+    this.documentViewLoading.set(false);
+    this.documentViewOpen.set(false);
+  }
+
+  closeSourcePreview(): void {
+    this.sourcePreview.set(null);
+    this.sourcePreviewLoading.set(false);
+    this.sourcePreviewOpen.set(false);
   }
 }
