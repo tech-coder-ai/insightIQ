@@ -1,6 +1,6 @@
 import { Component, computed, inject } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 
 import { AuthService } from '../../core/auth.service';
 import { ThemeService } from '../../core/theme.service';
@@ -355,6 +355,7 @@ export class LoginComponent {
   private readonly auth = inject(AuthService);
   private readonly theme = inject(ThemeService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
   private readonly fb = inject(FormBuilder);
 
   mode: 'login' | 'register' = 'login';
@@ -381,7 +382,10 @@ export class LoginComponent {
       : this.auth.register(tenantName || 'My Organisation', email!, password!);
 
     req.subscribe({
-      next: () => this.router.navigate(['/datasources']),
+      next: () => {
+        const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl');
+        void this.router.navigateByUrl(returnUrl && returnUrl.startsWith('/') ? returnUrl : '/datasources');
+      },
       error: (err: { error?: { detail?: string } }) => {
         this.loading = false;
         this.error = err?.error?.detail ?? 'Authentication failed. Please try again.';

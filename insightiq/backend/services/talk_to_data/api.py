@@ -7,7 +7,7 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
+from core.chat_history import load_llm_history
+from core.data.connection import mask_connection, merge_connection
 from core.data.connectors.base import IDBConnector
 from core.data.runner import open_connector
 from core.data.schema import SchemaMetadata
@@ -27,7 +29,6 @@ from core.data.scope import (
 )
 from core.data.sql_schema_check import validate_sql_against_schema
 from core.data.validators.readonly import check_readonly_select
-from core.chat_history import load_llm_history
 from core.deps import get_db
 from core.llm.base import LLMMessage
 from core.llm.factory import LLMProviderFactory
@@ -111,15 +112,21 @@ class DataSourceDetail(BaseModel):
     dialect: str
     description: str = ""
     metadata_status: str = "draft"
+    connection: dict[str, Any] = Field(default_factory=dict)
     schema_metadata: SchemaMetadata
     selected_scope: SelectedScope
-    relationships: list["Relationship"]
-    glossary: list["GlossaryEntry"]
+    relationships: list[Relationship]
+    glossary: list[GlossaryEntry]
 
 
 class UpdateDataSourceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    connection: dict[str, Any] | None = None
+
+
+class TestConnectionRequest(BaseModel):
+    connection: dict[str, Any] | None = None
 
 
 class SaveScopeRequest(BaseModel):
@@ -377,6 +384,7 @@ async def get_source(
         dialect=ds.dialect,
         description=ds.description or "",
         metadata_status=ds.metadata_status or "draft",
+        connection=mask_connection(ds.connection_config_json),
         schema_metadata=schema,
         selected_scope=selected_scope,
         relationships=[Relationship.model_validate(r) for r in (ds.relationships_json or [])],
@@ -396,6 +404,8 @@ async def update_source(
         ds.name = req.name
     if req.description is not None:
         ds.description = req.description
+    if req.connection is not None:
+        ds.connection_config_json = await _validate_and_merge_connection(ds, req.connection)
     await db.commit()
     await db.refresh(ds)
     return _to_response(ds)
@@ -404,13 +414,24 @@ async def update_source(
 @router.post("/sources/{datasource_id}/test")
 async def test_source(
     datasource_id: uuid.UUID,
+    req: TestConnectionRequest | None = None,
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, bool]:
     ds = await _get_datasource(db, ctx.tenant_id, datasource_id)
+    connection = ds.connection_config_json or {}
+    if req and req.connection is not None:
+        if ds.db_type == "duckdb_files":
+            raise HTTPException(
+                status_code=400,
+                detail="file-based datasources use stored files; connection cannot be tested with draft settings",
+            )
+        connection = merge_connection(connection, req.connection)
     try:
-        async with open_connector(ds.db_type, ds.connection_config_json) as connector:
+        async with open_connector(ds.db_type, connection) as connector:
             ok = await connector.test_connection()
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 - report failure rather than 500
         raise HTTPException(status_code=400, detail=f"connection failed: {exc}") from exc
     if not ok:
@@ -987,7 +1008,7 @@ def _to_response(ds: DataSource) -> DataSourceResponse:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _glossary_id(table: str, column: str | None) -> str:
@@ -1930,6 +1951,24 @@ async def _generate_description(
         f"{', '.join(table_names[:10]) or 'no tables discovered'}. "
         "Use it to explore and query this data in natural language."
     )
+
+
+async def _validate_and_merge_connection(ds: DataSource, incoming: dict[str, Any]) -> dict[str, Any]:
+    if ds.db_type == "duckdb_files":
+        raise HTTPException(
+            status_code=400,
+            detail="file-based datasources cannot change connection settings; upload a new datasource instead",
+        )
+    merged = merge_connection(ds.connection_config_json or {}, incoming)
+    try:
+        async with open_connector(ds.db_type, merged) as connector:
+            if not await connector.test_connection():
+                raise HTTPException(status_code=400, detail="connection failed")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"connection failed: {exc}") from exc
+    return merged
 
 
 async def _get_datasource(db: AsyncSession, tenant_id: uuid.UUID, datasource_id: uuid.UUID) -> DataSource:

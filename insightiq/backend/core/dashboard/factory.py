@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import importlib
 
-from core.dashboard.base import ICardRefresher
-from core.dashboard.base import CARD_REFRESHERS
+from core.dashboard.base import CARD_REFRESHERS, ICardRefresher
 
 
 class CardRefresherFactory:

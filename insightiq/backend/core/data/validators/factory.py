@@ -5,7 +5,6 @@ import importlib
 from core.data.validators.base import ISQLValidator
 from core.registry import Registry
 
-
 VALIDATORS: Registry[ISQLValidator] = Registry("validator")
 
 

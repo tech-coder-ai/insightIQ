@@ -68,15 +68,11 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         color: var(--text-2);
       }
       .canvas-shell {
-        flex: 1;
-        min-height: 0;
         width: 100%;
       }
-      .canvas-shell gridster {
+      :host ::ng-deep gridster {
         display: block;
         width: 100%;
-        height: 100%;
-        min-height: calc(100vh - 120px);
         background: transparent;
       }
       :host ::ng-deep gridster-item {
@@ -100,10 +96,12 @@ export class PublicDashboardComponent implements OnInit {
   dashboard: DashboardDetail | null = null;
   gridItems: { card: { id: string; title: string; refresh_mode: string }; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }[] = [];
 
+  readonly fixedRowHeight = 100;
+
   options = {
-    gridType: GridType.Fit,
+    gridType: GridType.ScrollVertical,
+    fixedRowHeight: this.fixedRowHeight,
     displayGrid: DisplayGrid.None,
-    setGridSize: true,
     draggable: { enabled: false },
     resizable: { enabled: false },
     margin: 12,
@@ -123,7 +121,7 @@ export class PublicDashboardComponent implements OnInit {
           const rows = Number(card.layout_json?.['rows'] ?? 3);
           return Math.max(max, y + rows);
         }, 0);
-        this.options = { ...this.options, minRows: Math.max(maxRow, 4) };
+        this.options = { ...this.options, fixedRowHeight: this.fixedRowHeight, minRows: Math.max(maxRow, 4) };
         this.gridItems = d.cards.map((card) => ({
           card,
           grid: {

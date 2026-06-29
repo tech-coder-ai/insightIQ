@@ -41,13 +41,14 @@ type DataSourceDetail = {
   dialect: string;
   description: string;
   metadata_status: string;
+  connection: Record<string, unknown>;
   schema_metadata: SchemaMetadata;
   selected_scope: { tables: Record<string, string[]> };
   relationships: Relationship[];
   glossary: GlossaryEntry[];
 };
 
-type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
+type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' | 'approval';
 
 @Component({
   standalone: true,
@@ -105,6 +106,146 @@ type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
         </div>
       }
 
+      <!-- ── Connection ── -->
+      @if (activeTab() === 'connection') {
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Connection settings</h2>
+            <div class="panel-actions">
+              @if (connectionEditable()) {
+                <button class="btn-ghost small" (click)="testConnectionDraft()" [disabled]="busy()">
+                  {{ busy() ? 'Testing…' : 'Test connection' }}
+                </button>
+                <button class="btn-primary small" (click)="saveConnection()" [disabled]="busy() || !nameDraft.trim()">
+                  {{ busy() ? 'Saving…' : 'Save connection' }}
+                </button>
+              }
+            </div>
+          </div>
+
+          @if (!connectionEditable()) {
+            <p class="notice">
+              This datasource reads from uploaded files. Connection settings cannot be changed here —
+              create a new datasource to upload a different file.
+            </p>
+            @if (uploadedFiles().length) {
+              <ul class="file-list">
+                @for (f of uploadedFiles(); track f.table) {
+                  <li><strong>{{ f.table }}</strong> <span class="muted">· {{ f.filename }}</span></li>
+                }
+              </ul>
+            }
+          } @else {
+            <p class="hint">Update host, credentials, or other connection details. Leave secret fields blank to keep the stored values.</p>
+
+            <label class="field">
+              <span>Source name</span>
+              <input [(ngModel)]="nameDraft" placeholder="Production DB" />
+            </label>
+
+            @if (['postgres','mssql','oracle'].includes(d.db_type)) {
+              <div class="form-grid">
+                <label class="field">
+                  <span>Host</span>
+                  <input [(ngModel)]="conn.host" placeholder="localhost" />
+                </label>
+                <label class="field">
+                  <span>Port</span>
+                  <input [(ngModel)]="conn.port" type="number" [placeholder]="defaultPort(d.db_type)" />
+                </label>
+                <label class="field">
+                  <span>{{ d.db_type === 'oracle' ? 'Service name' : 'Database' }}</span>
+                  <input [(ngModel)]="conn.database" />
+                </label>
+                <label class="field">
+                  <span>Username</span>
+                  <input [(ngModel)]="conn.user" />
+                </label>
+                <label class="field">
+                  <span>Password</span>
+                  <input [(ngModel)]="conn.password" type="password" [placeholder]="secretPlaceholder" autocomplete="new-password" />
+                </label>
+                @if (d.db_type === 'mssql') {
+                  <label class="field">
+                    <span>Schema (optional)</span>
+                    <input [(ngModel)]="conn.schema_name" placeholder="dbo" />
+                  </label>
+                }
+              </div>
+            }
+
+            @if (d.db_type === 'snowflake') {
+              <div class="form-grid">
+                <label class="field"><span>Account</span><input [(ngModel)]="conn.account" /></label>
+                <label class="field"><span>Warehouse</span><input [(ngModel)]="conn.warehouse" /></label>
+                <label class="field"><span>Database</span><input [(ngModel)]="conn.database" /></label>
+                <label class="field"><span>Schema (optional)</span><input [(ngModel)]="conn.schema_name" placeholder="PUBLIC" /></label>
+                <label class="field"><span>Username</span><input [(ngModel)]="conn.user" /></label>
+                <label class="field"><span>Password</span><input [(ngModel)]="conn.password" type="password" [placeholder]="secretPlaceholder" autocomplete="new-password" /></label>
+                <label class="field"><span>Role (optional)</span><input [(ngModel)]="conn.role" /></label>
+              </div>
+            }
+
+            @if (d.db_type === 'hive') {
+              <div class="form-grid">
+                <label class="field"><span>Host</span><input [(ngModel)]="conn.host" /></label>
+                <label class="field"><span>Port</span><input [(ngModel)]="conn.port" type="number" placeholder="10000" /></label>
+                <label class="field"><span>Database</span><input [(ngModel)]="conn.database" /></label>
+                <label class="field">
+                  <span>Auth method</span>
+                  <select [(ngModel)]="conn.auth">
+                    <option value="NOSASL">NOSASL</option>
+                    <option value="LDAP">LDAP</option>
+                    <option value="KERBEROS">Kerberos</option>
+                  </select>
+                </label>
+                <label class="field"><span>Username</span><input [(ngModel)]="conn.user" /></label>
+                <label class="field"><span>Password</span><input [(ngModel)]="conn.password" type="password" [placeholder]="secretPlaceholder" autocomplete="new-password" /></label>
+              </div>
+            }
+
+            @if (d.db_type === 'bigquery') {
+              <div class="form-grid">
+                <label class="field"><span>GCP Project</span><input [(ngModel)]="conn.project" /></label>
+                <label class="field"><span>Dataset</span><input [(ngModel)]="conn.dataset" /></label>
+                <label class="field full">
+                  <span>Service account JSON</span>
+                  <textarea [(ngModel)]="conn.credentials_json" rows="5" [placeholder]="secretPlaceholder"></textarea>
+                </label>
+              </div>
+            }
+
+            @if (d.db_type === 's3_object_store') {
+              <div class="form-grid">
+                <label class="field"><span>Endpoint</span><input [(ngModel)]="conn.endpoint" placeholder="localhost:9000" /></label>
+                <label class="field"><span>Region</span><input [(ngModel)]="conn.region" /></label>
+                <label class="field"><span>Access key</span><input [(ngModel)]="conn.access_key" [placeholder]="secretPlaceholder" /></label>
+                <label class="field"><span>Secret key</span><input [(ngModel)]="conn.secret_key" type="password" [placeholder]="secretPlaceholder" autocomplete="new-password" /></label>
+                <label class="field">
+                  <span>URL style</span>
+                  <select [(ngModel)]="conn.url_style">
+                    <option value="path">Path (MinIO)</option>
+                    <option value="virtual-hosted">Virtual-hosted (AWS)</option>
+                  </select>
+                </label>
+              </div>
+              <div class="table-globs">
+                <div class="section-label">File globs</div>
+                @for (glob of connectionGlobs(); track $index) {
+                  <div class="glob-row">
+                    <input [value]="glob.table" (input)="updateConnectionGlob($index, 'table', $any($event.target).value)" placeholder="sales" />
+                    <span>→</span>
+                    <input [value]="glob.pattern" (input)="updateConnectionGlob($index, 'pattern', $any($event.target).value)" placeholder="s3://bucket/sales/*.parquet" />
+                    <button type="button" class="btn-ghost small" (click)="removeConnectionGlob($index)">✕</button>
+                  </div>
+                }
+                <button type="button" class="btn-ghost small" (click)="addConnectionGlob()">+ Add file glob</button>
+              </div>
+            }
+          }
+        </div>
+      }
+
       <!-- ── Tables & Columns ── -->
       @if (activeTab() === 'tables') {
         <div class="panel">
@@ -125,8 +266,9 @@ type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
                 <label class="scope-check" (click)="$event.stopPropagation()">
                   <input
                     type="checkbox"
-                    [checked]="isTableInScope(t.name)"
-                    (change)="toggleScopeTable(t.name, $any($event.target).checked)"
+                    [checked]="isTableFullyInScope(t.name)"
+                    [class.partial]="isTablePartiallyInScope(t.name)"
+                    (click)="onScopeTableCheckboxClick(t.name, $event)"
                   />
                   <strong>{{ t.name }}</strong>
                 </label>
@@ -356,14 +498,36 @@ type Tab = 'overview' | 'tables' | 'relationships' | 'glossary' | 'approval';
     .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-5); }
     .panel-header h2 { margin: 0; font-size: var(--text-lg); }
     .panel-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .scope-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
-    .scope-check input { width: auto; margin: 0; }
+    .scope-check {
+      display: inline-flex; flex-direction: row; align-items: center; gap: 8px;
+      cursor: pointer; font-weight: 500; margin: 0;
+    }
+    .scope-check input[type='checkbox'],
+    .col-table input[type='checkbox'] {
+      width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0;
+      accent-color: var(--primary); cursor: pointer;
+    }
+    .scope-check input[type='checkbox'].partial { opacity: 0.65; }
     .hint { color: var(--text-muted); font-size: var(--text-sm); margin: 0 0 var(--space-4); }
     .header-actions { display: flex; gap: 8px; }
 
     .field { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--text-2); font-weight: 550; margin-bottom: 14px; }
-    input, select, textarea { padding: 9px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-strong); background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit; }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .field.full { grid-column: 1 / -1; }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 0 14px;
+      margin-bottom: 8px;
+    }
+    .form-grid .field { margin-bottom: 14px; }
+    .table-globs { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .glob-row { display: flex; align-items: center; gap: 8px; }
+    .glob-row input { flex: 1; }
+    .glob-row span { color: var(--text-muted); }
+    .file-list { margin: 0; padding-left: 18px; }
+    .file-list li { margin-bottom: 6px; font-size: var(--text-sm); }
+    input:not([type='checkbox']):not([type='radio']), select, textarea { padding: 9px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-strong); background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit; }
+    input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
     textarea { resize: vertical; }
 
     .btn-primary { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: var(--radius-md); border: none; background: var(--primary); color: var(--on-primary); font-size: var(--text-base); font-weight: 550; cursor: pointer; font-family: inherit; }
@@ -424,6 +588,7 @@ export class DatasourceDetailComponent implements OnInit {
 
   readonly tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
+    { id: 'connection', label: 'Connection' },
     { id: 'tables', label: 'Tables & Columns' },
     { id: 'relationships', label: 'Relationships' },
     { id: 'glossary', label: 'Glossary & Tags' },
@@ -438,8 +603,32 @@ export class DatasourceDetailComponent implements OnInit {
   readonly busy = signal(false);
   readonly message = signal('');
 
+  readonly connectionGlobs = signal<{ table: string; pattern: string }[]>([]);
+
   descDraft = '';
   descContext = '';
+  nameDraft = '';
+  readonly secretPlaceholder = 'Leave blank to keep current';
+  conn = {
+    host: '',
+    port: null as number | null,
+    database: '',
+    user: '',
+    password: '',
+    schema_name: '',
+    account: '',
+    warehouse: '',
+    role: '',
+    auth: 'NOSASL',
+    endpoint: '',
+    region: 'us-east-1',
+    access_key: '',
+    secret_key: '',
+    url_style: 'path',
+    project: '',
+    dataset: '',
+    credentials_json: '',
+  };
   glossaryContext = '';
   glossaryFilter = '';
   newRel: Relationship = { from_table: '', from_column: '', to_table: '', to_column: '', source: 'manual' };
@@ -449,6 +638,14 @@ export class DatasourceDetailComponent implements OnInit {
   private id = '';
 
   readonly pendingCount = computed(() => this.glossary().filter((g) => g.status !== 'approved').length);
+
+  readonly connectionEditable = computed(() => this.detail()?.db_type !== 'duckdb_files');
+
+  readonly uploadedFiles = computed(() => {
+    const files = this.detail()?.connection?.['files'];
+    if (!files || typeof files !== 'object') return [];
+    return Object.entries(files as Record<string, string>).map(([table, filename]) => ({ table, filename }));
+  });
 
   readonly filteredGlossary = computed(() => {
     const f = this.glossaryFilter;
@@ -467,12 +664,176 @@ export class DatasourceDetailComponent implements OnInit {
       next: (d) => {
         this.detail.set(d);
         this.descDraft = d.description || '';
+        this.nameDraft = d.name;
+        this.initConnectionFromDetail(d);
         this.relationships.set([...d.relationships]);
         this.glossary.set(d.glossary.map((g) => ({ ...g, tags: [...g.tags] })));
         this.initScopeFromDetail(d);
       },
       error: (err) => this.message.set(err?.error?.detail ?? 'Failed to load datasource.'),
     });
+  }
+
+  // ── Connection ──
+  initConnectionFromDetail(d: DataSourceDetail): void {
+    const c = d.connection || {};
+    this.conn = {
+      host: String(c['host'] ?? ''),
+      port: c['port'] != null ? Number(c['port']) : null,
+      database: String(c['database'] ?? ''),
+      user: String(c['user'] ?? ''),
+      password: '',
+      schema_name: String(c['schema'] ?? c['schema_name'] ?? ''),
+      account: String(c['account'] ?? ''),
+      warehouse: String(c['warehouse'] ?? ''),
+      role: String(c['role'] ?? ''),
+      auth: String(c['auth'] ?? 'NOSASL'),
+      endpoint: String(c['endpoint'] ?? ''),
+      region: String(c['region'] ?? 'us-east-1'),
+      access_key: '',
+      secret_key: '',
+      url_style: String(c['url_style'] ?? 'path'),
+      project: String(c['project'] ?? ''),
+      dataset: String(c['dataset'] ?? ''),
+      credentials_json: '',
+    };
+
+    const tableGlobs = c['table_globs'];
+    if (tableGlobs && typeof tableGlobs === 'object') {
+      this.connectionGlobs.set(
+        Object.entries(tableGlobs as Record<string, string>).map(([table, pattern]) => ({ table, pattern })),
+      );
+    } else {
+      this.connectionGlobs.set([{ table: '', pattern: '' }]);
+    }
+  }
+
+  buildConnectionPayload(): Record<string, unknown> {
+    const d = this.detail();
+    if (!d) return {};
+
+    const includeSecret = (key: keyof typeof this.conn, payload: Record<string, unknown>): void => {
+      const value = this.conn[key];
+      if (typeof value === 'string' && value.trim()) payload[key] = value.trim();
+    };
+
+    if (['postgres', 'mssql', 'oracle'].includes(d.db_type)) {
+      const payload: Record<string, unknown> = {
+        host: this.conn.host,
+        port: Number(this.conn.port),
+        database: this.conn.database,
+        user: this.conn.user,
+      };
+      includeSecret('password', payload);
+      if (this.conn.schema_name) payload['schema'] = this.conn.schema_name;
+      return payload;
+    }
+
+    if (d.db_type === 'snowflake') {
+      const payload: Record<string, unknown> = {
+        account: this.conn.account,
+        warehouse: this.conn.warehouse,
+        database: this.conn.database,
+        user: this.conn.user,
+      };
+      includeSecret('password', payload);
+      if (this.conn.schema_name) payload['schema'] = this.conn.schema_name;
+      if (this.conn.role) payload['role'] = this.conn.role;
+      return payload;
+    }
+
+    if (d.db_type === 'hive') {
+      const payload: Record<string, unknown> = {
+        host: this.conn.host,
+        port: Number(this.conn.port),
+        database: this.conn.database,
+        auth: this.conn.auth,
+        user: this.conn.user,
+      };
+      includeSecret('password', payload);
+      return payload;
+    }
+
+    if (d.db_type === 'bigquery') {
+      const payload: Record<string, unknown> = {
+        project: this.conn.project,
+        dataset: this.conn.dataset,
+      };
+      includeSecret('credentials_json', payload);
+      return payload;
+    }
+
+    if (d.db_type === 's3_object_store') {
+      const tableGlobs: Record<string, string> = {};
+      this.connectionGlobs().forEach((g) => {
+        if (g.table.trim()) tableGlobs[g.table.trim()] = g.pattern;
+      });
+      const payload: Record<string, unknown> = {
+        endpoint: this.conn.endpoint,
+        region: this.conn.region,
+        url_style: this.conn.url_style,
+        table_globs: tableGlobs,
+      };
+      includeSecret('access_key', payload);
+      includeSecret('secret_key', payload);
+      return payload;
+    }
+
+    return {};
+  }
+
+  testConnectionDraft(): void {
+    this.busy.set(true);
+    this.message.set('');
+    this.http.post<{ ok: boolean }>(`${API_BASE}/talk-to-data/sources/${this.id}/test`, {
+      connection: this.buildConnectionPayload(),
+    }).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.message.set('✓ Connection successful.');
+      },
+      error: (err) => {
+        this.busy.set(false);
+        this.message.set(err?.error?.detail ?? 'Connection test failed.');
+      },
+    });
+  }
+
+  saveConnection(): void {
+    if (!this.nameDraft.trim()) return;
+    this.busy.set(true);
+    this.message.set('');
+    this.http.patch<DataSourceDetail>(`${API_BASE}/talk-to-data/sources/${this.id}`, {
+      name: this.nameDraft.trim(),
+      connection: this.buildConnectionPayload(),
+    }).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.message.set('✓ Connection saved.');
+        this.load();
+      },
+      error: (err) => {
+        this.busy.set(false);
+        this.message.set(err?.error?.detail ?? 'Save connection failed.');
+      },
+    });
+  }
+
+  addConnectionGlob(): void {
+    this.connectionGlobs.update((g) => [...g, { table: '', pattern: '' }]);
+  }
+
+  removeConnectionGlob(index: number): void {
+    this.connectionGlobs.update((g) => g.filter((_, i) => i !== index));
+  }
+
+  updateConnectionGlob(index: number, field: 'table' | 'pattern', value: string): void {
+    this.connectionGlobs.update((g) => g.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
+  }
+
+  defaultPort(dbType: string): string {
+    const ports: Record<string, number> = { postgres: 5432, mssql: 1433, oracle: 1521, hive: 10000 };
+    return String(ports[dbType] ?? '');
   }
 
   // ── Overview ──
@@ -519,8 +880,30 @@ export class DatasourceDetailComponent implements OnInit {
     return Object.values(this.selectedScope()).some((cols) => cols.length > 0);
   }
 
-  isTableInScope(table: string): boolean {
-    return (this.selectedScope()[table]?.length ?? 0) > 0;
+  isTableFullyInScope(table: string): boolean {
+    const selected = this.selectedScope()[table]?.length ?? 0;
+    const total = this.detail()?.schema_metadata.tables.find((t) => t.name === table)?.columns.length ?? 0;
+    return total > 0 && selected === total;
+  }
+
+  isTablePartiallyInScope(table: string): boolean {
+    const selected = this.selectedScope()[table]?.length ?? 0;
+    const total = this.detail()?.schema_metadata.tables.find((t) => t.name === table)?.columns.length ?? 0;
+    return selected > 0 && selected < total;
+  }
+
+  onScopeTableCheckboxClick(table: string, event: MouseEvent): void {
+    event.stopPropagation();
+    const previewTable = this.detail()?.schema_metadata.tables.find((t) => t.name === table);
+    if (!previewTable) return;
+
+    const next = { ...this.selectedScope() };
+    if (this.isTableFullyInScope(table)) {
+      delete next[table];
+    } else {
+      next[table] = previewTable.columns.map((c) => c.name);
+    }
+    this.selectedScope.set(next);
   }
 
   isColumnInScope(table: string, column: string): boolean {
@@ -529,16 +912,6 @@ export class DatasourceDetailComponent implements OnInit {
 
   scopeColumnCount(table: string): number {
     return this.selectedScope()[table]?.length ?? 0;
-  }
-
-  toggleScopeTable(table: string, checked: boolean): void {
-    const d = this.detail();
-    const previewTable = d?.schema_metadata.tables.find((t) => t.name === table);
-    if (!previewTable) return;
-    const next = { ...this.selectedScope() };
-    if (checked) next[table] = previewTable.columns.map((c) => c.name);
-    else delete next[table];
-    this.selectedScope.set(next);
   }
 
   toggleScopeColumn(table: string, column: string, checked: boolean): void {

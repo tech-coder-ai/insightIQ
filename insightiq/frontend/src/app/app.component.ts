@@ -32,8 +32,8 @@ const NAV: NavGroup[] = [
   standalone: true,
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
   template: `
-    @if (showShell()) {
-      <div class="shell" [class.sidebar-open]="sidebarOpen()">
+    <div class="app-frame" [class.with-shell]="showShell()" [class.sidebar-open]="sidebarOpen()">
+      @if (showShell()) {
         <button
           type="button"
           class="mobile-nav-toggle"
@@ -94,21 +94,20 @@ const NAV: NavGroup[] = [
             </div>
           </div>
         </nav>
+      }
 
-        <main class="content">
-          <div class="content-inner">
-            <router-outlet />
-          </div>
-        </main>
-      </div>
-    } @else {
-      <router-outlet />
-    }
+      <main class="main-outlet" [class.content]="showShell()">
+        <div [class.content-inner]="showShell()">
+          <router-outlet />
+        </div>
+      </main>
+    </div>
   `,
   styles: [`
     :host { display: block; height: 100vh; }
 
-    .shell { display: flex; height: 100vh; overflow: hidden; }
+    .app-frame { display: flex; height: 100vh; overflow: hidden; }
+    .app-frame.with-shell { display: flex; }
 
     /* ── Sidebar ── */
     .sidebar {
@@ -282,13 +281,24 @@ const NAV: NavGroup[] = [
     .signout:hover { color: var(--danger); background: var(--danger-soft); }
 
     /* ── Content ── */
-    .content { flex: 1; overflow-y: auto; min-width: 0; position: relative; }
+    .main-outlet { flex: 1; min-width: 0; }
+    .main-outlet.content {
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
     .content-inner {
       padding: var(--space-6) var(--space-8) var(--space-10);
-      min-height: 100%;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
       max-width: calc(var(--content-max) + var(--space-8) * 2);
       margin: 0 auto;
       width: 100%;
+      box-sizing: border-box;
     }
 
     .mobile-nav-toggle,
@@ -342,7 +352,7 @@ const NAV: NavGroup[] = [
         transition: transform var(--dur) var(--ease);
         box-shadow: var(--shadow-lg);
       }
-      .shell.sidebar-open .sidebar { transform: translateX(0); }
+      .app-frame.with-shell.sidebar-open .sidebar { transform: translateX(0); }
       .content-inner { padding: calc(var(--space-10) + 12px) var(--space-5) var(--space-8); }
     }
 

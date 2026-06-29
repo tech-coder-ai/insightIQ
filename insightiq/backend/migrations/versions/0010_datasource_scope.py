@@ -11,7 +11,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-
 revision = "0010_datasource_scope"
 down_revision = "0009_datasource_metadata"
 branch_labels = None

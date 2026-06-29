@@ -66,6 +66,6 @@ def response_table_matrix(response: dict[str, Any] | None) -> list[list[str]] | 
         values = data.get("values") or []
         if not labels:
             return None
-        return [["Category", "Value"], *[[str(l), str(v)] for l, v in zip(labels, values, strict=False)]]
+        return [["Category", "Value"], *[[str(label), str(value)] for label, value in zip(labels, values, strict=False)]]
 
     return None

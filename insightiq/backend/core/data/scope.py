@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.data.schema import ColumnMeta, SchemaMetadata, TableMeta
+from core.data.schema import SchemaMetadata, TableMeta
 
 
 def default_scope_from_schema(schema: SchemaMetadata) -> dict[str, Any]:

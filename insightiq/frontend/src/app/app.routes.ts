@@ -1,7 +1,6 @@
 import { Routes } from '@angular/router';
 
 import { authGuard } from './core/auth.guard';
-import { DashboardCanvasComponent } from './features/dashboards/dashboard-canvas.component';
 import { DashboardListComponent } from './features/dashboards/dashboard-list.component';
 import { PublicDashboardComponent } from './features/dashboards/public-dashboard.component';
 import { DatasourceDetailComponent } from './features/datasources/datasource-detail.component';
@@ -24,6 +23,11 @@ export const routes: Routes = [
   { path: 'talk-to-docs',  component: TalkToDocsComponent,    canActivate: [authGuard] },
   { path: 'prompt-library', component: PromptLibraryComponent, canActivate: [authGuard] },
   { path: 'prompt-studio', component: PromptStudioComponent,  canActivate: [authGuard] },
-  { path: 'dashboards',     component: DashboardListComponent, canActivate: [authGuard] },
-  { path: 'dashboards/:id', component: DashboardCanvasComponent, canActivate: [authGuard] },
+  { path: 'dashboards',     component: DashboardListComponent,     canActivate: [authGuard] },
+  {
+    path: 'dashboards/:id',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/dashboards/dashboard-canvas.component').then((m) => m.DashboardCanvasComponent),
+  },
 ];

@@ -10,7 +10,6 @@ from core.rag.highlight_resolver import resolve_highlights
 from core.rag.profiles import RagProfileConfig
 from core.rag.state import (
     CriticVerdict,
-    CuratedContext,
     QueryIntent,
     RetrievalRoute,
     RetrievedChunk,

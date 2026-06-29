@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from sqlalchemy import select
-import uuid
 
 from core.dashboard.base import CARD_REFRESHERS, ICardRefresher, RefreshResult
 from core.deps import get_app_sessionmaker

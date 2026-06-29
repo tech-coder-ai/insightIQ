@@ -20,7 +20,12 @@ export class AuthService {
   );
 
   isLoggedIn(): boolean {
-    return environment.authDisabled || this.isAuthenticated();
+    if (environment.authDisabled) return true;
+    const loggedIn = !!localStorage.getItem('insightiq_token');
+    if (this.isAuthenticated() !== loggedIn) {
+      this.isAuthenticated.set(loggedIn);
+    }
+    return loggedIn;
   }
 
   isAdmin(): boolean {

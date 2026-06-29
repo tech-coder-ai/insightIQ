@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 from core.rag.state import RagProfile
 
-
 PROFILES_DIR = Path(__file__).resolve().parents[2] / "config" / "rag_profiles"
 
 

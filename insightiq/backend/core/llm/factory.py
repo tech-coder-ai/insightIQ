@@ -5,7 +5,6 @@ import importlib
 from core.llm.base import ILLMProvider
 from core.registry import Registry
 
-
 LLM_PROVIDERS: Registry[ILLMProvider] = Registry("llm")
 
 

@@ -10,7 +10,6 @@ from core.dev_auth import DEV_TENANT_ID, DEV_USER_ID
 from core.security import TokenClaims, decode_access_token
 from core.types import Role
 
-
 bearer = HTTPBearer(auto_error=False)
 
 

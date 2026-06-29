@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from core.data.validators.readonly import DESTRUCTIVE, check_readonly_select
-from core.llm.heuristic import HeuristicLLMProvider
 from core.llm.base import LLMMessage
+from core.llm.heuristic import HeuristicLLMProvider
 from core.registry import Registry, UnknownPluginError
 
 

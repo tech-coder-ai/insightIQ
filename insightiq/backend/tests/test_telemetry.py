@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from core.telemetry.logging import get_correlation_id, set_correlation_id
 
 

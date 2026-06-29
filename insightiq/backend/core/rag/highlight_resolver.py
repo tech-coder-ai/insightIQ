@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from core.rag.state import HighlightSpan, HighlightedResponse, RetrievedChunk
+from core.rag.state import HighlightedResponse, HighlightSpan, RetrievedChunk
 
 DOC_COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f778ba", "#a371f7"]
 

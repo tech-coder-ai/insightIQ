@@ -65,6 +65,8 @@ class PinCardRequest(BaseModel):
 class UpdateCardRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=300)
     layout_json: dict[str, Any] | None = None
+    refresh_mode: str | None = None
+    auto_refresh_seconds: int | None = Field(default=None, ge=30, le=86400)
 
 
 class UpdateFiltersRequest(BaseModel):
@@ -195,15 +197,21 @@ async def pin_card(
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
     await _get_dashboard(db, ctx, dashboard_id, require_edit=True)
+    _validate_refresh_mode(req.refresh_mode)
 
     layout_json = dict(req.layout_json)
-    if layout_json.get("x", 0) == 0 and layout_json.get("y", 0) == 0:
-        cards_res = await db.execute(select(DashboardCard).where(DashboardCard.dashboard_id == dashboard_id))
-        y_offset = 0
-        for existing in cards_res.scalars().all():
-            layout = existing.layout_json or {}
-            y_offset = max(y_offset, int(layout.get("y", 0)) + int(layout.get("rows", 3)))
-        layout_json["y"] = y_offset
+    new_rows = max(int(layout_json.get("rows", 3)), 2)
+    new_cols = int(layout_json.get("cols", 4))
+    layout_json["x"] = int(layout_json.get("x", 0))
+    layout_json["y"] = 0
+    layout_json["cols"] = new_cols
+    layout_json["rows"] = new_rows
+
+    cards_res = await db.execute(select(DashboardCard).where(DashboardCard.dashboard_id == dashboard_id))
+    for existing in cards_res.scalars().all():
+        layout = dict(existing.layout_json or {})
+        layout["y"] = int(layout.get("y", 0)) + new_rows
+        existing.layout_json = layout
 
     card = DashboardCard(
         dashboard_id=dashboard_id,
@@ -242,13 +250,27 @@ async def update_card(
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> CardResponse:
-    if req.title is None and req.layout_json is None:
+    if (
+        req.title is None
+        and req.layout_json is None
+        and req.refresh_mode is None
+        and "auto_refresh_seconds" not in req.model_fields_set
+    ):
         raise HTTPException(status_code=400, detail="no updates provided")
     card = await _get_card(db, ctx, dashboard_id, card_id, require_edit=True)
     if req.title is not None:
         card.title = req.title
     if req.layout_json is not None:
         card.layout_json = req.layout_json
+    if req.refresh_mode is not None:
+        _validate_refresh_mode(req.refresh_mode)
+        card.refresh_mode = req.refresh_mode
+        if req.refresh_mode == "snapshot":
+            card.auto_refresh_seconds = None
+    if "auto_refresh_seconds" in req.model_fields_set:
+        if card.refresh_mode != "live" and req.auto_refresh_seconds is not None:
+            raise HTTPException(status_code=400, detail="auto_refresh_seconds requires live refresh mode")
+        card.auto_refresh_seconds = req.auto_refresh_seconds
     await db.commit()
     await db.refresh(card)
     return _card_response(card)
@@ -388,6 +410,11 @@ async def _get_card(
     if card is None:
         raise HTTPException(status_code=404, detail="card not found")
     return card
+
+
+def _validate_refresh_mode(refresh_mode: str) -> None:
+    if refresh_mode not in {"snapshot", "live"}:
+        raise HTTPException(status_code=400, detail="refresh_mode must be snapshot or live")
 
 
 def _card_response(c: DashboardCard) -> CardResponse:

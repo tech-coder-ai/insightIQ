@@ -4,7 +4,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote_plus
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 
 def build_postgres_url(connection: dict[str, Any]) -> str:

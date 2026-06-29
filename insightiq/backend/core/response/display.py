@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-
 DEFAULT_DATE_FORMAT_NAME = "yyyy-mm-dd"
 
 

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from core.rag.state import RetrievedChunk
 from core.registry import Registry
 
-RERANKERS: Registry["IReranker"] = Registry("reranker")
+RERANKERS: Registry[IReranker] = Registry("reranker")
 
 
 class IReranker(ABC):

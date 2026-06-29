@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -12,7 +10,6 @@ from core.deps import get_db
 from core.models import Tenant, User
 from core.security import encode_access_token, hash_password, verify_password
 from core.types import Role
-
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

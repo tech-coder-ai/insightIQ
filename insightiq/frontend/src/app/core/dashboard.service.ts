@@ -43,6 +43,7 @@ export class DashboardService {
       source_config: Record<string, unknown>;
       refresh_mode?: string;
       layout_json?: Record<string, unknown>;
+      auto_refresh_seconds?: number | null;
     },
   ): Observable<DashboardCard> {
     return this.http.post<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards`, body);
@@ -51,7 +52,12 @@ export class DashboardService {
   updateCard(
     dashboardId: string,
     cardId: string,
-    body: { title?: string; layout_json?: Record<string, unknown> },
+    body: {
+      title?: string;
+      layout_json?: Record<string, unknown>;
+      refresh_mode?: string;
+      auto_refresh_seconds?: number | null;
+    },
   ): Observable<DashboardCard> {
     return this.http.patch<DashboardCard>(`${API_BASE}/dashboards/${dashboardId}/cards/${cardId}`, body);
   }

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from core.llm.factory import LLMProviderFactory
 from core.llm.base import LLMMessage
+from core.llm.factory import LLMProviderFactory
 
 
 class EvalScores(BaseModel):

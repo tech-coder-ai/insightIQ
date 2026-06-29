@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import importlib
 
-from core.registry import Registry
 from core.data.connectors.base import IDBConnector
-
+from core.registry import Registry
 
 CONNECTORS: Registry[IDBConnector] = Registry("connector")
 

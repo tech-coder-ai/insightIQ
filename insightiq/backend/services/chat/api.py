@@ -12,7 +12,6 @@ from core.deps import get_db
 from core.models import ChatMessage, Conversation
 from core.request_context import RequestContext, require_auth
 
-
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 

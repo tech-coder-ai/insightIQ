@@ -3,10 +3,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class JwtSettings(BaseModel):
@@ -87,7 +87,7 @@ class SettingsSnapshot(BaseModel):
     jwt_access_token_ttl_seconds: int
 
     @classmethod
-    def from_settings(cls, s: AppSettings) -> "SettingsSnapshot":
+    def from_settings(cls, s: AppSettings) -> SettingsSnapshot:
         return cls(
             env=s.env,
             database_url=s.database.url,

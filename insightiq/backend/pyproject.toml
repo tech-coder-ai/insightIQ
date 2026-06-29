@@ -58,7 +58,10 @@ dev = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008", "E501", "UP046"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -70,3 +73,4 @@ disallow_any_generics = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]

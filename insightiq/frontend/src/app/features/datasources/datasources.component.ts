@@ -346,8 +346,9 @@ const PAGILA_SAMPLE = {
                         <label class="scope-check" (click)="$event.stopPropagation()">
                           <input
                             type="checkbox"
-                            [checked]="isTableSelected(t.name)"
-                            (change)="toggleTable(t.name, $any($event.target).checked)"
+                            [checked]="isTableFullySelected(t.name)"
+                            [class.partial]="isTablePartiallySelected(t.name)"
+                            (click)="onTableCheckboxClick(t.name, $event)"
                           />
                           <strong>{{ t.name }}</strong>
                         </label>
@@ -536,9 +537,9 @@ const PAGILA_SAMPLE = {
       grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
       gap: 14px;
     }
-    label { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--text-2); font-weight: 550; }
+    label:not(.scope-check) { display: flex; flex-direction: column; gap: 6px; font-size: var(--text-xs); color: var(--text-2); font-weight: 550; }
     label.full { grid-column: 1 / -1; }
-    input, select, textarea {
+    input:not([type='checkbox']):not([type='radio']):not([type='file']), select, textarea {
       padding: 9px 12px;
       border-radius: var(--radius-md);
       border: 1px solid var(--border-strong);
@@ -548,7 +549,7 @@ const PAGILA_SAMPLE = {
       font-family: inherit;
       transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
     }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+    input:not([type='checkbox']):not([type='radio']):not([type='file']):focus, select:focus, textarea:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
     textarea { resize: vertical; font-family: var(--font-mono); font-size: var(--text-sm); }
 
     .section-label { font-size: var(--text-sm); color: var(--text-2); margin-bottom: 8px; font-weight: 550; }
@@ -583,10 +584,22 @@ const PAGILA_SAMPLE = {
       padding-bottom: 4px;
     }
     .scope-check {
-      display: flex; align-items: center; gap: 8px;
-      font-size: var(--text-sm); color: var(--text-2); cursor: pointer;
+      display: flex; flex-direction: row; align-items: center; gap: 8px;
+      font-size: var(--text-sm); color: var(--text-2); font-weight: 500;
+      cursor: pointer; margin: 0;
     }
-    .scope-check input { width: auto; margin: 0; }
+    .scope-check input[type='checkbox'] {
+      width: 16px; height: 16px; min-width: 16px; margin: 0; padding: 0;
+      flex-shrink: 0; accent-color: var(--primary); cursor: pointer;
+    }
+    .scope-check input[type='checkbox'].partial {
+      opacity: 0.65;
+    }
+    .scope-columns .scope-check {
+      padding: 4px 6px; border-radius: var(--radius-sm);
+      transition: background var(--dur-fast) var(--ease);
+    }
+    .scope-columns .scope-check:hover { background: var(--surface-3); }
     .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
     .info { font-size: var(--text-sm); color: var(--text-2); padding: 14px; background: var(--surface-2); border-radius: var(--radius-md); }
     .msg-ok  { color: var(--success); font-size: var(--text-sm); }
@@ -831,8 +844,30 @@ export class DatasourcesComponent implements OnInit {
     return Object.values(this.selectedScope()).some((cols) => cols.length > 0);
   }
 
-  isTableSelected(table: string): boolean {
-    return (this.selectedScope()[table]?.length ?? 0) > 0;
+  isTableFullySelected(table: string): boolean {
+    const selected = this.selectedScope()[table]?.length ?? 0;
+    const total = this.previewSchema()?.tables.find((t) => t.name === table)?.columns.length ?? 0;
+    return total > 0 && selected === total;
+  }
+
+  isTablePartiallySelected(table: string): boolean {
+    const selected = this.selectedScope()[table]?.length ?? 0;
+    const total = this.previewSchema()?.tables.find((t) => t.name === table)?.columns.length ?? 0;
+    return selected > 0 && selected < total;
+  }
+
+  onTableCheckboxClick(table: string, event: MouseEvent): void {
+    event.stopPropagation();
+    const previewTable = this.previewSchema()?.tables.find((t) => t.name === table);
+    if (!previewTable) return;
+
+    const next = { ...this.selectedScope() };
+    if (this.isTableFullySelected(table)) {
+      delete next[table];
+    } else {
+      next[table] = previewTable.columns.map((c) => c.name);
+    }
+    this.selectedScope.set(next);
   }
 
   isColumnSelected(table: string, column: string): boolean {
@@ -841,19 +876,6 @@ export class DatasourcesComponent implements OnInit {
 
   selectedColumnCount(table: string): number {
     return this.selectedScope()[table]?.length ?? 0;
-  }
-
-  toggleTable(table: string, checked: boolean): void {
-    const schema = this.previewSchema();
-    const previewTable = schema?.tables.find((t) => t.name === table);
-    if (!previewTable) return;
-    const next = { ...this.selectedScope() };
-    if (checked) {
-      next[table] = previewTable.columns.map((c) => c.name);
-    } else {
-      delete next[table];
-    }
-    this.selectedScope.set(next);
   }
 
   toggleColumn(table: string, column: string, checked: boolean): void {

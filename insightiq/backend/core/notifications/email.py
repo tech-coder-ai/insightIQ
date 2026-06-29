@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from core.events.bus import get_event_bus
 from config.settings import get_settings_resolver
+from core.events.bus import get_event_bus
 
 logger = logging.getLogger(__name__)
 

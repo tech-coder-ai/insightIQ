@@ -330,6 +330,25 @@ type ChatMessageDto = {
             <div class="modal-err">{{ pinError() }}</div>
           }
 
+          <label class="modal-field">
+            <span>Data refresh</span>
+            <select [(ngModel)]="pinRefreshMode">
+              <option value="snapshot">Snapshot — frozen at pin time</option>
+              <option value="live">Live — re-run query on refresh</option>
+            </select>
+          </label>
+          @if (pinRefreshMode === 'live') {
+            <label class="modal-field">
+              <span>Auto-refresh (optional)</span>
+              <select [(ngModel)]="pinAutoRefreshSeconds">
+                <option [ngValue]="null">Manual only</option>
+                <option [ngValue]="60">Every 1 minute</option>
+                <option [ngValue]="300">Every 5 minutes</option>
+                <option [ngValue]="900">Every 15 minutes</option>
+              </select>
+            </label>
+          }
+
           @if (pinDashboards().length === 0) {
             <p class="modal-hint">No dashboards yet. Create one to save this chart.</p>
             <label class="modal-field">
@@ -487,6 +506,8 @@ export class TalkToDataComponent implements OnInit {
   readonly pinError = signal('');
   pinSelectedDashboardId = '';
   pinNewDashboardName = 'My Dashboard';
+  pinRefreshMode: 'snapshot' | 'live' = 'snapshot';
+  pinAutoRefreshSeconds: number | null = null;
   readonly conversations = signal<Conversation[]>([]);
   readonly activeConversationId = signal<string | null>(null);
   readonly renamingId = signal<string | null>(null);
@@ -769,6 +790,8 @@ export class TalkToDataComponent implements OnInit {
     this.pinMsg.set(null);
     this.pinCreateMode.set(false);
     this.pinError.set('');
+    this.pinRefreshMode = 'snapshot';
+    this.pinAutoRefreshSeconds = null;
   }
 
   canConfirmPin(): boolean {
@@ -817,18 +840,32 @@ export class TalkToDataComponent implements OnInit {
         sql: msg.sql ?? '',
         question: msg.question ?? '',
       },
-      refresh_mode: 'snapshot',
+      refresh_mode: this.pinRefreshMode,
+      auto_refresh_seconds: this.pinRefreshMode === 'live' ? this.pinAutoRefreshSeconds : null,
+      layout_json: { x: 0, y: 0, cols: 6, rows: 4 },
     }).subscribe({
-      next: () => {
+      next: (card) => {
         this.pinning.set(false);
         this.closePinModal();
-        void this.router.navigate(['/dashboards', dashboardId]);
+        const go = () => this.navigateToDashboard(dashboardId, card.id);
+        if (this.pinRefreshMode === 'live') {
+          this.dashboardService.refreshCard(dashboardId, card.id).subscribe({
+            complete: go,
+            error: go,
+          });
+          return;
+        }
+        go();
       },
       error: (err: { error?: { detail?: string } }) => {
         this.pinning.set(false);
         this.pinError.set(err?.error?.detail ?? 'Could not pin to dashboard.');
       },
     });
+  }
+
+  private navigateToDashboard(dashboardId: string, cardId: string): void {
+    void this.router.navigate(['/dashboards', dashboardId], { queryParams: { card: cardId } });
   }
 
   private scrollToBottom(): void {

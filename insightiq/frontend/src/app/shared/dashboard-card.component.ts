@@ -7,7 +7,7 @@ import { ResponseRendererComponent } from './response-renderer.component';
   standalone: true,
   imports: [ResponseRendererComponent],
   template: `
-    <div class="dcard">
+    <div class="dcard" [class.dcard-highlight]="highlighted">
       <div class="drag-bar dcard-drag-handle" title="Drag to reposition">⋮⋮</div>
       <div class="head">
         <div class="title-wrap">
@@ -39,7 +39,32 @@ import { ResponseRendererComponent } from './response-renderer.component';
           }
         </div>
         <div class="head-actions">
-          <span class="mode">{{ refreshMode }}</span>
+          @if (editable) {
+            <select
+              class="mode-select"
+              [value]="refreshMode"
+              (mousedown)="$event.stopPropagation()"
+              (change)="onRefreshModeChange($event)"
+              [title]="refreshMode === 'live' ? 'Re-runs query on refresh' : 'Frozen at pin time'"
+            >
+              <option value="snapshot">Snapshot</option>
+              <option value="live">Live</option>
+            </select>
+            @if (refreshMode === 'live') {
+              <button
+                type="button"
+                class="refresh-btn"
+                title="Refresh now"
+                aria-label="Refresh now"
+                (mousedown)="$event.stopPropagation()"
+                (click)="onRefresh($event)"
+              >
+                ↻
+              </button>
+            }
+          } @else {
+            <span class="mode" [class.mode-live]="refreshMode === 'live'">{{ refreshMode }}</span>
+          }
           @if (removable) {
             <button
               type="button"
@@ -73,6 +98,11 @@ import { ResponseRendererComponent } from './response-renderer.component';
         border-radius: var(--radius-md);
         box-shadow: var(--shadow-sm);
         overflow: hidden;
+        transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+      }
+      .dcard.dcard-highlight {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px var(--primary-soft), var(--shadow-md);
       }
       .drag-bar {
         align-self: center;
@@ -170,6 +200,42 @@ import { ResponseRendererComponent } from './response-renderer.component';
         text-transform: uppercase;
         letter-spacing: 0.05em;
       }
+      .mode-live {
+        color: var(--primary-text);
+      }
+      .mode-select {
+        padding: 2px 6px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text-2);
+        font-size: var(--text-xs);
+        font-family: inherit;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+      }
+      .mode-select:focus {
+        outline: none;
+        border-color: var(--border-focus);
+      }
+      .refresh-btn {
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--primary-text);
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .refresh-btn:hover {
+        background: var(--primary-soft);
+        border-color: var(--primary-soft-2);
+      }
     `,
   ],
 })
@@ -180,11 +246,14 @@ export class DashboardCardComponent {
 
   @Input() title = '';
   @Input() refreshMode = 'snapshot';
+  @Input() highlighted = false;
   @Input() removable = false;
   @Input() editable = false;
   @Input() payload: { response_type: string; title?: string; data: Record<string, unknown> } | null = null;
   @Output() remove = new EventEmitter<void>();
   @Output() titleChange = new EventEmitter<string>();
+  @Output() refreshModeChange = new EventEmitter<{ mode: string; autoRefreshSeconds: number | null }>();
+  @Output() refresh = new EventEmitter<void>();
 
   editing = false;
   draft = '';
@@ -193,6 +262,19 @@ export class DashboardCardComponent {
   onRemove(event: Event): void {
     event.stopPropagation();
     this.remove.emit();
+  }
+
+  onRefreshModeChange(event: Event): void {
+    const mode = (event.target as HTMLSelectElement).value;
+    this.refreshModeChange.emit({
+      mode,
+      autoRefreshSeconds: null,
+    });
+  }
+
+  onRefresh(event: Event): void {
+    event.stopPropagation();
+    this.refresh.emit();
   }
 
   startEdit(event: Event): void {
