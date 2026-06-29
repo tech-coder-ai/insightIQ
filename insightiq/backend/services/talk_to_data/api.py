@@ -27,6 +27,7 @@ from core.data.scope import (
 )
 from core.data.sql_schema_check import validate_sql_against_schema
 from core.data.validators.readonly import check_readonly_select
+from core.chat_history import load_llm_history
 from core.deps import get_db
 from core.llm.base import LLMMessage
 from core.llm.factory import LLMProviderFactory
@@ -674,6 +675,10 @@ async def ask(
     conversation_id = req.conversation_id or uuid.uuid4()
     await _ensure_conversation(db, ctx, conversation_id, ds.id, req.question)
 
+    prior_history: list[LLMMessage] = []
+    if req.conversation_id:
+        prior_history = await load_llm_history(db, ctx, req.conversation_id)
+
     schema = _scoped_schema(ds)
     relationships = [
         Relationship.model_validate(r)
@@ -741,6 +746,7 @@ async def ask(
             system_prompt=system_prompt,
             question=req.question,
             connector=connector,
+            prior_messages=prior_history,
         )
 
         if resolution.proposal:
@@ -1472,10 +1478,12 @@ async def _resolve_sql_or_clarify(
     system_prompt: str,
     question: str,
     connector: IDBConnector,
+    prior_messages: list[LLMMessage] | None = None,
     max_retries: int = _MAX_SQL_RETRIES,
 ) -> SqlResolution:
     """Generate SQL, verify against schema metadata, validate with EXPLAIN, or ask the user."""
-    messages = [LLMMessage(role="user", content=question)]
+    messages = list(prior_messages or [])
+    messages.append(LLMMessage(role="user", content=question))
     last_error = ""
     last_sql = ""
 

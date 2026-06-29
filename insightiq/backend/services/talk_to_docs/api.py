@@ -10,6 +10,7 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings_resolver
+from core.chat_history import load_rag_history
 from core.deps import get_db
 from core.ingestion.jobs import (
     IngestionJob,
@@ -320,11 +321,15 @@ async def ask_documents(
         generation_instructions = version.template_body or None
 
     engine = RagEngine()
+    conversation_history = []
+    if req.conversation_id:
+        conversation_history = await load_rag_history(db, ctx, req.conversation_id)
     result = await engine.run(
         query=req.question,
         tenant_id=str(ctx.tenant_id),
         collection_ids=[str(col.id)],
         profile_name=profile_name,
+        conversation_history=conversation_history,
         system_prompt_override=system_prompt_override,
         generation_instructions=generation_instructions,
     )

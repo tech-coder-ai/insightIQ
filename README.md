@@ -47,6 +47,24 @@ npm start
 
 Open http://localhost:4200 · API http://localhost:8000 · Docs http://localhost:8000/docs
 
+### Sample PostgreSQL database (Pagila)
+
+A realistic **Pagila DVD rental** dataset (~16k rentals, 2k films, customers, payments) is available for Talk to Data demos.
+
+**First-time Docker setup** — Pagila loads automatically when Postgres initializes (fresh volume).
+
+**Existing Postgres volume** — run once:
+
+```bash
+cd insightiq
+chmod +x scripts/load_pagila_sample_db.sh
+./scripts/load_pagila_sample_db.sh
+```
+
+Connection: `localhost:5432` · database **`pagila`** · user **`insightiq`** · password **`insightiq`**
+
+In the UI: **Datasources → PostgreSQL → Use Pagila sample**, then continue to register.
+
 1. Register at `/login`
 2. Register a Postgres datasource under **Talk to Data**
 3. Upload documents under **Talk to Documents**

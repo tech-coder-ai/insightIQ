@@ -73,8 +73,10 @@ def build_graph(cfg: RagProfileConfig):
     def after_understand(state: dict[str, Any]) -> str:
         if not state.get("needs_retrieval", True):
             return "generate"
+        has_history = bool(state.get("conversation_history"))
         if (
-            cfg.transform.rewrite
+            has_history
+            or cfg.transform.rewrite
             or cfg.transform.decompose
             or cfg.transform.variations > 1
             or cfg.transform.hyde

@@ -46,6 +46,17 @@ const DB_COLORS: Record<string, string> = {
   hive: '#f9a825', bigquery: '#4285f4', s3_object_store: '#ff9900', duckdb_files: '#ffd43b',
 };
 
+/** Local Pagila DVD rental sample (loaded via scripts/load_pagila_sample_db.sh). */
+const PAGILA_SAMPLE = {
+  name: 'Pagila DVD Rental (sample)',
+  description: 'Public Pagila sample: films, customers, rentals, payments, stores (~16k rentals).',
+  host: 'localhost',
+  port: 5432,
+  database: 'pagila',
+  user: 'insightiq',
+  password: 'insightiq',
+};
+
 @Component({
   standalone: true,
   imports: [ReactiveFormsModule],
@@ -113,6 +124,16 @@ const DB_COLORS: Record<string, string> = {
 
               <!-- ── PostgreSQL / MSSQL / Oracle ── -->
               @if (['postgres','mssql','oracle'].includes(selectedConnector()!.key)) {
+                @if (selectedConnector()!.key === 'postgres') {
+                  <div class="sample-db-tip">
+                    <div>
+                      <strong>Try the Pagila sample database</strong>
+                      <p>DVD rental dataset from the internet: 2,000 films, 16,000+ rentals, customers, payments, and stores.</p>
+                      <code>./scripts/load_pagila_sample_db.sh</code> if it is not loaded yet.
+                    </div>
+                    <button type="button" class="btn-ghost small" (click)="applyPagilaSample()">Use Pagila sample</button>
+                  </div>
+                }
                 <div class="form-grid">
                   <label>
                     <span>Host *</span>
@@ -494,6 +515,13 @@ const DB_COLORS: Record<string, string> = {
       margin-bottom: var(--space-5);
     }
     .selected-connector .btn-ghost { margin-left: auto; }
+    .sample-db-tip {
+      display: flex; justify-content: space-between; gap: 12px; align-items: flex-start;
+      margin-bottom: var(--space-4); padding: 12px 14px; border-radius: var(--radius-md);
+      border: 1px solid var(--border); background: var(--surface-2);
+    }
+    .sample-db-tip p { margin: 4px 0 6px; font-size: var(--text-sm); color: var(--text-2); }
+    .sample-db-tip code { font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text-muted); }
 
     /* form */
     form { display: flex; flex-direction: column; gap: var(--space-5); }
@@ -675,6 +703,19 @@ export class DatasourcesComponent implements OnInit {
     this.statusMessage.set('');
     this.uploadFile.set(null);
     this.form.patchValue({ port: this.defaultPort(c.key) as unknown as number });
+  }
+
+  applyPagilaSample(): void {
+    this.form.patchValue({
+      name: PAGILA_SAMPLE.name,
+      description: PAGILA_SAMPLE.description,
+      host: PAGILA_SAMPLE.host,
+      port: PAGILA_SAMPLE.port,
+      database: PAGILA_SAMPLE.database,
+      user: PAGILA_SAMPLE.user,
+      password: PAGILA_SAMPLE.password,
+    });
+    this.statusMessage.set('Pagila connection details filled. Click Continue to preview schema.');
   }
 
   cancelForm(): void {

@@ -27,6 +27,39 @@ def _chunks_to_dict(chunks: list[RetrievedChunk]) -> list[dict[str, Any]]:
     return [c.__dict__ for c in chunks]
 
 
+def _history_llm_messages(state: dict[str, Any]) -> list[LLMMessage]:
+    messages: list[LLMMessage] = []
+    for item in state.get("conversation_history") or []:
+        role = item.get("role", "user")
+        content = (item.get("content") or "").strip()
+        if content and role in {"user", "assistant", "system"}:
+            messages.append(LLMMessage(role=role, content=content))
+    return messages
+
+
+async def _standalone_query(
+    query: str,
+    history: list[LLMMessage],
+    *,
+    provider_key: str,
+) -> str:
+    if not history:
+        return query
+    llm = LLMProviderFactory.create(provider_key)
+    system = (
+        "Given a conversation and a follow-up question, rewrite the follow-up as a "
+        "standalone question that preserves necessary context from prior turns. "
+        "Output only the rewritten question."
+    )
+    messages = list(history[-10:])
+    messages.append(LLMMessage(role="user", content=query))
+    try:
+        rewritten = await llm.complete(system=system, messages=messages)
+        return rewritten.strip() or query
+    except Exception:  # noqa: BLE001
+        return query
+
+
 async def node_understand(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str, Any]:
     query = state["raw_query"].strip().lower()
     if cfg.gating and query in {"hi", "hello", "thanks", "thank you"}:
@@ -55,26 +88,36 @@ async def node_understand(state: dict[str, Any], cfg: RagProfileConfig) -> dict[
 
 async def node_transform(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str, Any]:
     query = state["raw_query"]
-    sub_queries = [query]
-    variations = [query]
+    history = _history_llm_messages(state)
+    provider_key = cfg.generation.get("llm", "heuristic")
+    search_query = query
+    if history:
+        search_query = await _standalone_query(query, history, provider_key=provider_key)
+
+    sub_queries = [search_query]
+    variations = [search_query]
     hyde_doc = None
 
-    if cfg.transform.decompose and " and " in query:
-        sub_queries = [p.strip() for p in query.split(" and ") if p.strip()]
+    if cfg.transform.decompose and " and " in search_query:
+        sub_queries = [p.strip() for p in search_query.split(" and ") if p.strip()]
 
     if cfg.transform.variations > 1:
-        variations = [query, f"explain {query}", f"details about {query}"][: cfg.transform.variations]
+        variations = [
+            search_query,
+            f"explain {search_query}",
+            f"details about {search_query}",
+        ][: cfg.transform.variations]
 
     if cfg.transform.hyde:
         llm = LLMProviderFactory.create("heuristic")
         hyde_doc = await llm.complete(
             system="Write a short hypothetical answer.",
-            messages=[LLMMessage(role="user", content=query)],
+            messages=[LLMMessage(role="user", content=search_query)],
         )
 
-    rewritten = query
+    rewritten = search_query
     if cfg.transform.rewrite:
-        rewritten = query.rstrip("?") + " (from company documents)"
+        rewritten = search_query.rstrip("?") + " (from company documents)"
 
     return {
         "sub_queries": sub_queries,
@@ -214,13 +257,14 @@ def _extractive_fallback(chunks: list[RetrievedChunk], reason: str) -> str:
 async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str, Any]:
     query = state["raw_query"]
     provider_key = cfg.generation.get("llm", "heuristic")
+    history = _history_llm_messages(state)
 
     if not state.get("needs_retrieval", True):
         llm = LLMProviderFactory.create(provider_key)
         try:
             answer = await llm.complete(
                 system="You are InsightIQ, a helpful and concise assistant.",
-                messages=[LLMMessage(role="user", content=query)],
+                messages=[*history, LLMMessage(role="user", content=query)],
             )
         except Exception as exc:  # noqa: BLE001 - surface a friendly message instead of 500
             answer = f"\u26a0\ufe0f The language model is not available right now ({exc})."
@@ -246,7 +290,7 @@ async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[st
     try:
         answer = await llm.complete(
             system=system_prompt,
-            messages=[LLMMessage(role="user", content=user_prompt)],
+            messages=[*history, LLMMessage(role="user", content=user_prompt)],
         )
         if not answer.strip():
             answer = _extractive_fallback(chunks, "empty response")
