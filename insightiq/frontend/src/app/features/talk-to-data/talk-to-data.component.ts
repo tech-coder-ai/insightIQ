@@ -1,5 +1,5 @@
 import { HttpClient } from '@angular/common/http';
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
@@ -54,26 +54,30 @@ type ChatMessageDto = {
   standalone: true,
   imports: [ReactiveFormsModule, FormsModule, ResponseRendererComponent, SchemaTreeComponent, PromptPickerComponent, RouterLink],
   template: `
-    <div class="page">
+    <div class="page page-chat">
       <div class="page-header">
         <div>
+          <span class="label-eyebrow">Analytics</span>
           <h1>Talk to Data</h1>
-          <p>Ask questions in plain English. InsightIQ generates SQL and visualizes the result.</p>
+          <p>Ask questions in plain English. InsightIQ generates SQL and visualizes results.</p>
         </div>
         @if (sources().length === 0) {
-          <a routerLink="/datasources" class="btn-primary">+ Add datasource</a>
+          <a routerLink="/datasources" class="btn btn-primary">+ Add datasource</a>
         }
       </div>
 
       @if (sources().length === 0) {
         <div class="empty">
-          <div class="empty-icon">📊</div>
-          <p>No datasources connected yet.</p>
-          <a routerLink="/datasources" class="btn-primary">Go to Datasources →</a>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/></svg>
+          </div>
+          <h3>No datasources connected</h3>
+          <p>Connect a database to start asking questions in natural language.</p>
+          <a routerLink="/datasources" class="btn btn-primary">Add datasource</a>
         </div>
       } @else {
-        <div class="workspace">
-          <aside class="side-panel">
+        <div class="chat-workspace">
+          <aside class="chat-side-panel side-panel">
             <div class="panel-section">
               <div class="panel-label">Datasource</div>
               <div class="source-row">
@@ -140,114 +144,143 @@ type ChatMessageDto = {
             }
           </aside>
 
-          <div class="chat-area">
+          <div class="chat-panel">
             @if (!selectedSourceId()) {
-              <div class="chat-empty">
-                <p>Select a datasource on the left, then ask a question below.</p>
+              <div class="chat-welcome">
+                <div class="icon-tile" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/></svg>
+                </div>
+                <h3>Select a datasource</h3>
+                <p>Choose a connection on the left, then ask your first question.</p>
               </div>
             } @else {
-              @if (messages().length === 0) {
-                <div class="chat-empty-inner">
-                  <p>Ask anything about your data — results appear as tables or charts.</p>
-                  <div class="suggestions">
-                    @for (s of suggestions; track s) {
-                      <button class="suggestion" (click)="quickAsk(s)">{{ s }}</button>
-                    }
+              @if (messages().length === 0 && !loading()) {
+                <div class="chat-messages">
+                  <div class="chat-welcome">
+                    <div class="icon-tile" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    </div>
+                    <h3>Start a conversation</h3>
+                    <p>Ask anything about your data — results appear as tables or charts.</p>
+                    <div class="prompt-starters">
+                      @for (s of suggestions; track s) {
+                        <button type="button" class="prompt-starter" (click)="quickAsk(s)">{{ s }}</button>
+                      }
+                    </div>
                   </div>
                 </div>
-              }
-
-              <div class="messages">
+              } @else {
+              <div class="chat-messages" #messagesPane>
                 @for (msg of messages(); track $index) {
                   @if (msg.role === 'user') {
                     <div class="msg-row user">
-                      @if (editingIndex() === $index) {
-                        <div class="edit-box">
-                          <textarea [(ngModel)]="editDraft" rows="2" (keydown.enter)="$event.preventDefault(); saveEdit($index)"></textarea>
-                          <div class="edit-actions">
-                            <button class="btn-ghost sm" (click)="cancelEdit()">Cancel</button>
-                            <button class="btn-primary sm" (click)="saveEdit($index)">Save &amp; resend</button>
+                      <div class="msg-row-inner">
+                        @if (editingIndex() === $index) {
+                          <div class="msg-body">
+                            <div class="edit-box">
+                              <textarea [(ngModel)]="editDraft" rows="2" (keydown.enter)="$event.preventDefault(); saveEdit($index)"></textarea>
+                              <div class="edit-actions">
+                                <button class="btn-ghost sm" (click)="cancelEdit()">Cancel</button>
+                                <button class="btn-primary sm" (click)="saveEdit($index)">Save &amp; resend</button>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      } @else {
-                        <div class="msg user-msg">{{ msg.question }}</div>
-                        <div class="msg-actions">
-                          <button class="icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')">✎</button>
-                          <button class="icon-btn" title="Copy" (click)="copy(msg.question || '', 'u' + $index)">
-                            {{ copied() === 'u' + $index ? '✓' : '⧉' }}
-                          </button>
-                        </div>
-                      }
+                        } @else {
+                          <div class="msg-body">
+                            <div class="msg-bubble user">{{ msg.question }}</div>
+                            <div class="msg-actions">
+                              <button class="msg-icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')">✎ Edit</button>
+                              <button class="msg-icon-btn" title="Copy" (click)="copy(msg.question || '', 'u' + $index)">
+                                {{ copied() === 'u' + $index ? '✓ Copied' : '⧉ Copy' }}
+                              </button>
+                            </div>
+                          </div>
+                          <div class="msg-avatar user" aria-hidden="true">You</div>
+                        }
+                      </div>
                     </div>
                   } @else {
                     <div class="msg-row assistant">
-                      <div class="msg assistant-msg">
-                        @if (msg.error) {
-                          <div class="error">{{ msg.error }}</div>
-                        } @else {
-                          @if (msg.awaitingConfirmation && msg.proposedSql) {
-                            <details class="sql-details" open>
-                              <summary>Proposed SQL</summary>
-                              <pre>{{ msg.proposedSql }}</pre>
-                            </details>
-                          } @else if (msg.sql) {
-                            <details class="sql-details">
-                              <summary>Generated SQL</summary>
-                              <pre>{{ msg.sql }}</pre>
-                            </details>
-                          }
-                          <app-response-renderer [payload]="msg.response ?? null" />
-                          @if (msg.awaitingConfirmation) {
-                            <div class="confirm-actions">
-                              <button type="button" class="btn-primary sm" (click)="confirmProposal()" [disabled]="loading()">
-                                Yes, run it
-                              </button>
-                              <button type="button" class="btn-ghost sm" (click)="rejectProposal()" [disabled]="loading()">
-                                No, rephrase
+                      <div class="msg-row-inner">
+                        <div class="msg-avatar bot" aria-hidden="true">IQ</div>
+                        <div class="msg-body">
+                          <div class="msg-bubble assistant">
+                            @if (msg.error) {
+                              <div class="error">{{ msg.error }}</div>
+                            } @else {
+                              @if (msg.awaitingConfirmation && msg.proposedSql) {
+                                <details class="sql-details" open>
+                                  <summary>Proposed SQL</summary>
+                                  <pre>{{ msg.proposedSql }}</pre>
+                                </details>
+                              } @else if (msg.sql) {
+                                <details class="sql-details">
+                                  <summary>Generated SQL</summary>
+                                  <pre>{{ msg.sql }}</pre>
+                                </details>
+                              }
+                              <app-response-renderer [payload]="msg.response ?? null" />
+                              @if (msg.awaitingConfirmation) {
+                                <div class="confirm-actions">
+                                  <button type="button" class="btn-primary sm" (click)="confirmProposal()" [disabled]="loading()">
+                                    Yes, run it
+                                  </button>
+                                  <button type="button" class="btn-ghost sm" (click)="rejectProposal()" [disabled]="loading()">
+                                    No, rephrase
+                                  </button>
+                                </div>
+                              }
+                            }
+                          </div>
+                          @if (!msg.error && !msg.awaitingConfirmation) {
+                            <div class="msg-actions">
+                              @if (msg.sql) {
+                                <button class="msg-icon-btn" title="Copy SQL" (click)="copy(msg.sql || '', 's' + $index)">
+                                  {{ copied() === 's' + $index ? '✓ Copied' : '⧉ SQL' }}
+                                </button>
+                              }
+                              <button class="msg-icon-btn" title="Pin to dashboard" (click)="openPinModal(msg)" [disabled]="pinning()">
+                                📌 Pin
                               </button>
                             </div>
                           }
-                        }
-                      </div>
-                      @if (!msg.error && !msg.awaitingConfirmation) {
-                        <div class="msg-actions">
-                          @if (msg.sql) {
-                            <button class="icon-btn" title="Copy SQL" (click)="copy(msg.sql || '', 's' + $index)">
-                              {{ copied() === 's' + $index ? '✓ Copied' : '⧉ SQL' }}
-                            </button>
-                          }
-                          <button class="icon-btn" title="Pin to dashboard" (click)="openPinModal(msg)" [disabled]="pinning()">
-                            📌 Pin
-                          </button>
                         </div>
-                      }
+                      </div>
                     </div>
                   }
                 }
 
                 @if (loading()) {
-                  <div class="msg assistant-msg thinking">
-                    <span></span><span></span><span></span>
+                  <div class="msg-row assistant">
+                    <div class="msg-row-inner">
+                      <div class="msg-avatar bot" aria-hidden="true">IQ</div>
+                      <div class="msg-bubble assistant thinking">
+                        <span class="typing"><span></span><span></span><span></span></span>
+                      </div>
+                    </div>
                   </div>
                 }
               </div>
+              }
 
-              <form class="input-bar" [formGroup]="askForm" (ngSubmit)="ask()">
-                <div class="input-stack">
+              <form class="chat-composer" [formGroup]="askForm" (ngSubmit)="ask()">
+                <div class="chat-composer-stack">
                   <app-prompt-picker
                     [selectedId]="selectedPromptId()"
                     (selectedIdChange)="selectedPromptId.set($event)"
                   />
-                  <div class="input-row">
+                  <div class="chat-composer-row">
                     <input
                       formControlName="question"
-                      placeholder="e.g. Show monthly revenue by region as a bar chart"
+                      placeholder="Ask about your data… e.g. monthly revenue by region"
                       autocomplete="off"
+                      aria-label="Question"
                     />
-                    <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading() || !selectedSourceId()">
-                      Ask
+                    <button type="submit" class="btn btn-primary" [disabled]="askForm.invalid || loading() || !selectedSourceId()">
+                      {{ loading() ? 'Thinking…' : 'Ask' }}
                     </button>
                   </div>
+                  <div class="chat-composer-hint">Press Enter to send · Follow-ups keep conversation context</div>
                 </div>
               </form>
             }
@@ -338,77 +371,19 @@ type ChatMessageDto = {
     }
   `,
   styles: [`
-    .page { max-width: 1140px; }
-
-    .btn-primary {
-      padding: 9px 16px; border-radius: var(--radius-md); border: none;
-      background: var(--primary); color: var(--on-primary); font-size: var(--text-base);
-      font-weight: 550; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;
-      font-family: inherit; transition: background var(--dur-fast) var(--ease);
-    }
-    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
-    .btn-primary:disabled { opacity: 0.5; cursor: default; }
-    .btn-primary.sm { padding: 5px 12px; font-size: var(--text-xs); }
-    .btn-ghost {
-      padding: 5px 10px; border-radius: var(--radius-sm);
-      border: 1px solid var(--border-strong);
-      background: transparent; color: var(--text-2); cursor: pointer; font-size: var(--text-sm);
-      font-family: inherit; transition: all var(--dur-fast) var(--ease);
-    }
-    .btn-ghost.tiny { padding: 3px 8px; font-size: var(--text-xs); }
-    .btn-ghost.sm { padding: 5px 12px; font-size: var(--text-xs); }
-    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
-
-    .empty {
-      text-align: center; padding: var(--space-12) var(--space-6);
-      border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
-      display: flex; flex-direction: column; align-items: center; gap: var(--space-4);
-      color: var(--text-2);
-    }
-    .empty-icon { font-size: 48px; }
-
-    .workspace {
-      display: grid;
-      grid-template-columns: 272px 1fr;
-      gap: 20px;
-      height: calc(100vh - 200px);
-      min-height: 520px;
-    }
-
-    .side-panel {
-      display: flex; flex-direction: column; gap: var(--space-4);
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: var(--space-4);
-      overflow-y: auto;
-      box-shadow: var(--shadow-sm);
-    }
-    .panel-section { display: flex; flex-direction: column; gap: 8px; }
-    .source-row { display: flex; align-items: center; gap: 8px; }
-    .source-row select { flex: 1; min-width: 0; }
-    .schema-btn { flex-shrink: 0; width: 36px; height: 36px; justify-content: center; padding: 0; font-size: 16px; }
-    .panel-label {
-      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--text-muted); font-weight: 700; display: flex; align-items: center; gap: 6px;
-    }
-    .schema-modal { width: min(560px, 92vw); max-height: min(80vh, 720px); display: flex; flex-direction: column; }
-    .schema-modal-body {
-      flex: 1; min-height: 0; overflow: auto;
-      padding: 4px 2px 2px;
-      border-top: 1px solid var(--border);
-      margin-top: 8px;
-    }
-    .modal-head-actions { display: flex; align-items: center; gap: 8px; }
-    select {
+    .side-panel select {
+      flex: 1; min-width: 0;
       padding: 9px 11px; border-radius: var(--radius-md);
       border: 1px solid var(--border-strong);
       background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit;
     }
-    select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .side-panel select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+    .source-row { display: flex; align-items: center; gap: 8px; }
+    .schema-btn { flex-shrink: 0; width: 36px; height: 36px; justify-content: center; padding: 0; font-size: 16px; }
 
     .purpose-card { padding: 12px 14px; background: var(--primary-soft); border: 1px solid var(--primary-soft-2); border-radius: var(--radius-md); }
-    .purpose-label { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--primary); margin-bottom: 4px; }
+    .purpose-label { font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--primary-text); margin-bottom: 4px; }
     .purpose-card p { margin: 0; font-size: var(--text-sm); color: var(--text-2); line-height: 1.5; }
 
     .history { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -420,19 +395,12 @@ type ChatMessageDto = {
     }
     .new-chat:hover { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
     .hist-empty { font-size: var(--text-xs); color: var(--text-muted); padding: 4px 2px; line-height: 1.5; }
-    .conv-list { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
-    .conv-item {
-      display: flex; align-items: center; gap: 2px; border-radius: var(--radius-md);
-      border: 1px solid transparent; padding-right: 2px;
-    }
-    .conv-item:hover { background: var(--surface-2); }
-    .conv-item.active { border-color: var(--primary); background: var(--primary-soft); }
     .conv-main {
       flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
       text-align: left; padding: 7px 9px; border: none; background: transparent;
       color: inherit; cursor: pointer; font-family: inherit;
     }
-    .conv-star { color: var(--warning, #d29922); font-size: 11px; }
+    .conv-star { color: var(--warning); font-size: 11px; }
     .conv-title { font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .conv-actions { display: flex; gap: 2px; opacity: 0; flex-shrink: 0; }
     .conv-item:hover .conv-actions, .conv-item.active .conv-actions { opacity: 1; }
@@ -441,61 +409,6 @@ type ChatMessageDto = {
       border: 1px solid var(--border-focus); background: var(--input-bg); color: var(--text);
       font-size: var(--text-sm); font-family: inherit;
     }
-
-    .chat-area {
-      display: flex; flex-direction: column;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      box-shadow: var(--shadow-sm);
-    }
-    .chat-empty, .chat-empty-inner {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      gap: var(--space-5); padding: var(--space-10); text-align: center; color: var(--text-2);
-    }
-    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-    .suggestion {
-      padding: 7px 14px; border-radius: var(--radius-pill);
-      border: 1px solid var(--border-strong);
-      background: var(--surface-2);
-      color: var(--text-2); cursor: pointer; font-size: var(--text-sm); font-family: inherit;
-    }
-    .suggestion:hover { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
-
-    .messages {
-      flex: 1; overflow-y: auto; padding: var(--space-5);
-      display: flex; flex-direction: column; gap: var(--space-4);
-    }
-    .msg-row { display: flex; flex-direction: column; gap: 4px; max-width: 92%; }
-    .msg-row.user { align-self: flex-end; align-items: flex-end; }
-    .msg-row.assistant { align-self: flex-start; align-items: stretch; max-width: 94%; }
-    .msg { max-width: 100%; }
-    .user-msg {
-      background: var(--primary); color: var(--on-primary);
-      border-radius: 14px 14px 3px 14px;
-      padding: 10px 14px; font-size: var(--text-base);
-    }
-    .assistant-msg {
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 3px 14px 14px 14px;
-      padding: 14px; font-size: var(--text-base);
-      display: flex; flex-direction: column; gap: 10px;
-    }
-    .msg-actions { display: flex; gap: 4px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
-    .msg-row:hover .msg-actions { opacity: 1; }
-    .icon-btn {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 8px; border-radius: var(--radius-sm);
-      border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text-muted); cursor: pointer; font-size: var(--text-xs); font-family: inherit;
-    }
-    .icon-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface-3); }
-    .icon-btn:disabled { opacity: 0.5; cursor: default; }
-    .icon-btn.xs { padding: 2px 5px; font-size: 11px; }
-    .icon-btn.xs.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 
     .edit-box { display: flex; flex-direction: column; gap: 8px; width: 420px; max-width: 100%; }
     .edit-box textarea {
@@ -514,43 +427,16 @@ type ChatMessageDto = {
     }
     .confirm-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
     .error { color: var(--danger); font-size: var(--text-sm); }
+    .thinking { padding: 16px !important; }
 
-    .thinking { padding: 16px !important; flex-direction: row !important; }
-    .thinking span {
-      display: inline-block; width: 7px; height: 7px;
-      border-radius: 50%; background: var(--primary-text); margin: 0 2px;
-      animation: bounce 1.2s infinite;
-    }
-    .thinking span:nth-child(2) { animation-delay: 0.2s; }
-    .thinking span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
-
-    .input-bar {
-      display: flex; gap: 10px; padding: var(--space-4);
-      border-top: 1px solid var(--border);
-      background: var(--surface-2);
-    }
-    .input-stack { flex: 1; display: grid; gap: 8px; }
-    .input-row { display: flex; gap: 10px; }
-    .input-bar input {
-      flex: 1; padding: 10px 14px; border-radius: var(--radius-md);
-      border: 1px solid var(--border-strong);
-      background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit;
-    }
-    .input-bar input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
-
-    .modal-backdrop {
-      position: fixed; inset: 0; z-index: 1000;
-      background: rgba(0, 0, 0, 0.45);
-      display: flex; align-items: center; justify-content: center; padding: 20px;
-    }
-    .modal {
-      width: min(440px, 100%); background: var(--surface);
-      border: 1px solid var(--border); border-radius: var(--radius-lg);
-      padding: var(--space-6); box-shadow: var(--shadow-lg);
+    .schema-modal { width: min(560px, 92vw); max-height: min(80vh, 720px); display: flex; flex-direction: column; }
+    .schema-modal-body {
+      flex: 1; min-height: 0; overflow: auto;
+      padding: 4px 2px 2px; border-top: 1px solid var(--border); margin-top: 8px;
     }
     .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
     .modal-head h2 { margin: 0; font-size: var(--text-lg); }
+    .modal-head-actions { display: flex; align-items: center; gap: 8px; }
     .modal-sub { margin: 0 0 16px; color: var(--text-2); font-size: var(--text-sm); }
     .modal-hint { margin: 0 0 12px; color: var(--text-2); font-size: var(--text-sm); }
     .modal-err { margin-bottom: 12px; color: var(--danger); font-size: var(--text-sm); }
@@ -566,6 +452,14 @@ type ChatMessageDto = {
       color: var(--primary-text); cursor: pointer; font-size: var(--text-sm); font-family: inherit;
     }
     .link-btn:hover { text-decoration: underline; }
+    .icon-btn {
+      display: inline-flex; align-items: center; padding: 3px 8px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border); background: var(--surface-2);
+      color: var(--text-muted); cursor: pointer; font-size: var(--text-xs); font-family: inherit;
+    }
+    .icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
+    .icon-btn.xs { padding: 2px 5px; font-size: 11px; }
+    .icon-btn.xs.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   `],
 })
 export class TalkToDataComponent implements OnInit {
@@ -574,6 +468,7 @@ export class TalkToDataComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly messagesPane = viewChild<ElementRef<HTMLElement>>('messagesPane');
 
   readonly sources = signal<DataSource[]>([]);
   readonly selectedSourceId = signal('');
@@ -688,6 +583,7 @@ export class TalkToDataComponent implements OnInit {
           }
         }
         this.messages.set(out);
+        this.scrollToBottom();
       },
       error: () => this.loading.set(false),
     });
@@ -784,6 +680,7 @@ export class TalkToDataComponent implements OnInit {
     this.messages.update((m) => [...m, { role: 'user', question: q }]);
     if (override === undefined) this.askForm.reset();
     this.loading.set(true);
+    this.scrollToBottom();
 
     this.http.post<AskResponse>(`${API_BASE}/talk-to-data/ask`, {
       datasource_id: this.selectedSourceId(),
@@ -806,6 +703,7 @@ export class TalkToDataComponent implements OnInit {
           interpretation: res.interpretation,
         }]);
         if (wasNew) this.reloadConversations();
+        this.scrollToBottom();
       },
       error: (err: { error?: { detail?: string } }) => {
         this.loading.set(false);
@@ -813,6 +711,7 @@ export class TalkToDataComponent implements OnInit {
           role: 'assistant',
           error: err?.error?.detail ?? 'Query failed. Please try again.',
         }]);
+        this.scrollToBottom();
       },
     });
   }
@@ -930,5 +829,12 @@ export class TalkToDataComponent implements OnInit {
         this.pinError.set(err?.error?.detail ?? 'Could not pin to dashboard.');
       },
     });
+  }
+
+  private scrollToBottom(): void {
+    setTimeout(() => {
+      const el = this.messagesPane()?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   }
 }

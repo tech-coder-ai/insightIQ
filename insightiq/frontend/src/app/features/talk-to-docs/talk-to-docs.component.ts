@@ -1,5 +1,5 @@
 import { HttpClient } from '@angular/common/http';
-import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 
 import { API_BASE } from '../../core/api.config';
@@ -77,14 +77,15 @@ const RAG_PROFILES = [
   standalone: true,
   imports: [ReactiveFormsModule, FormsModule, MarkdownDirective, PromptPickerComponent],
   template: `
-    <div class="page">
+    <div class="page page-chat">
       <div class="page-header">
         <div>
+          <span class="label-eyebrow">Knowledge base</span>
           <h1>Talk to Documents</h1>
-          <p>Upload documents, run the 10-stage RAG pipeline, and chat with your knowledge base.</p>
+          <p>Upload documents, run the RAG pipeline, and chat with grounded answers and citations.</p>
         </div>
-        <button class="btn-ghost" (click)="showNewCollection.set(!showNewCollection())">
-          {{ showNewCollection() ? '✕ Cancel' : '+ New collection' }}
+        <button class="btn btn-ghost" (click)="showNewCollection.set(!showNewCollection())">
+          {{ showNewCollection() ? 'Cancel' : '+ New collection' }}
         </button>
       </div>
 
@@ -128,15 +129,18 @@ const RAG_PROFILES = [
 
       @if (collections().length === 0 && !showNewCollection()) {
         <div class="empty">
-          <div class="empty-icon">📄</div>
-          <p>No document collections yet.</p>
-          <button class="btn-primary" (click)="showNewCollection.set(true)">Create your first collection →</button>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+          </div>
+          <h3>No collections yet</h3>
+          <p>Create a collection and upload documents to start chatting.</p>
+          <button class="btn btn-primary" (click)="showNewCollection.set(true)">Create collection</button>
         </div>
       } @else if (collections().length > 0) {
-        <div class="workspace">
+        <div class="chat-workspace">
 
           <!-- ── Left: collection list + upload ── -->
-          <aside class="side-panel">
+          <aside class="chat-side-panel side-panel">
             <div class="panel-label">Collections</div>
             <div class="collection-list">
               @for (c of collections(); track c.id) {
@@ -257,24 +261,32 @@ const RAG_PROFILES = [
           </aside>
 
           <!-- ── Right: chat ── -->
-          <div class="chat-area">
+          <div class="chat-panel">
             @if (!selectedCollection()) {
-              <div class="chat-empty">
-                <p>Select a collection from the left to start chatting.</p>
+              <div class="chat-welcome">
+                <div class="icon-tile" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                </div>
+                <h3>Select a collection</h3>
+                <p>Pick a document collection from the sidebar to begin.</p>
               </div>
             } @else {
-              <div class="chat-header">
+              <div class="chat-panel-head">
                 <strong>{{ selectedCollection()!.name }}</strong>
-                <span class="rag-badge">{{ selectedCollection()!.rag_profile }}</span>
+                <span class="badge">{{ selectedCollection()!.rag_profile }}</span>
               </div>
 
-              <div class="messages">
-                @if (messages().length === 0) {
-                  <div class="chat-empty-inner">
-                    <p>Upload documents and ask anything about their content.</p>
-                    <div class="suggestions">
+              <div class="chat-messages" #messagesPane>
+                @if (messages().length === 0 && !loading()) {
+                  <div class="chat-welcome">
+                    <div class="icon-tile" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    </div>
+                    <h3>Ask your documents</h3>
+                    <p>Upload content and get answers with source citations.</p>
+                    <div class="prompt-starters">
                       @for (s of suggestions; track s) {
-                        <button class="suggestion" (click)="quickAsk(s)">{{ s }}</button>
+                        <button type="button" class="prompt-starter" (click)="quickAsk(s)">{{ s }}</button>
                       }
                     </div>
                   </div>
@@ -283,98 +295,121 @@ const RAG_PROFILES = [
                 @for (msg of messages(); track $index) {
                   @if (msg.role === 'user') {
                     <div class="msg-row user">
-                      @if (editingIndex() === $index) {
-                        <div class="edit-box">
-                          <textarea [(ngModel)]="editDraft" rows="2" (keydown.enter)="$event.preventDefault(); saveEdit($index)"></textarea>
-                          <div class="edit-actions">
-                            <button class="btn-ghost sm" (click)="cancelEdit()">Cancel</button>
-                            <button class="btn-primary sm" (click)="saveEdit($index)">Save &amp; resend</button>
+                      <div class="msg-row-inner">
+                        @if (editingIndex() === $index) {
+                          <div class="msg-body">
+                            <div class="edit-box">
+                              <textarea [(ngModel)]="editDraft" rows="2" (keydown.enter)="$event.preventDefault(); saveEdit($index)"></textarea>
+                              <div class="edit-actions">
+                                <button class="btn btn-ghost btn-sm" (click)="cancelEdit()">Cancel</button>
+                                <button class="btn btn-primary btn-sm" (click)="saveEdit($index)">Save &amp; resend</button>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      } @else {
-                        <div class="msg user-msg">{{ msg.question }}</div>
-                        <div class="msg-actions">
-                          <button class="icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')">✎</button>
-                          <button class="icon-btn" title="Copy" (click)="copy(msg.question || '', 'u' + $index)">
-                            {{ copied() === 'u' + $index ? '✓' : '⧉' }}
-                          </button>
-                        </div>
-                      }
+                        } @else {
+                          <div class="msg-body">
+                            <div class="msg-bubble user">{{ msg.question }}</div>
+                            <div class="msg-actions">
+                              <button class="msg-icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')">Edit</button>
+                              <button class="msg-icon-btn" title="Copy" (click)="copy(msg.question || '', 'u' + $index)">
+                                {{ copied() === 'u' + $index ? 'Copied' : 'Copy' }}
+                              </button>
+                            </div>
+                          </div>
+                          <div class="msg-avatar user" aria-hidden="true">You</div>
+                        }
+                      </div>
                     </div>
                   } @else {
                     <div class="msg-row assistant">
-                      <div class="msg assistant-msg">
-                        @if (msg.error) {
-                          <div class="error">{{ msg.error }}</div>
-                        } @else {
-                          <div class="answer markdown" [appMarkdown]="msg.answerMd || ''"></div>
-                          @if (msg.highlights && msg.highlights.length) {
-                            <div class="sources">
-                              <div class="sources-head">References</div>
-                              @for (h of msg.highlights; track h.chunk_id) {
-                                <div class="source-entry">
-                                  <button
-                                    type="button"
-                                    class="source-card"
-                                    [style.borderLeftColor]="h.color"
-                                    (click)="openSourcePreview(h.chunk_id)"
-                                  >
-                                    <span class="source-ref">[{{ h.ref_index || $index + 1 }}]</span>
-                                    <span class="source-meta">
-                                      {{ h.filename || ('Document ' + h.document_id.slice(0, 8)) }}
-                                      @if (h.page_number) { · page {{ h.page_number }} }
-                                    </span>
-                                    @if (h.text_snippet) {
-                                      <span class="source-snippet">"{{ h.text_snippet }}"</span>
-                                    }
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="source-doc-btn"
-                                    title="View highlighted passage in document"
-                                    aria-label="View highlighted passage in document"
-                                    (click)="openDocumentView(h)"
-                                  >
-                                    📄 View in document
-                                  </button>
+                      <div class="msg-row-inner">
+                        <div class="msg-avatar bot" aria-hidden="true">IQ</div>
+                        <div class="msg-body">
+                          <div class="msg-bubble assistant">
+                            @if (msg.error) {
+                              <div class="error">{{ msg.error }}</div>
+                            } @else {
+                              <div class="answer markdown" [appMarkdown]="msg.answerMd || ''"></div>
+                              @if (msg.highlights && msg.highlights.length) {
+                                <div class="sources">
+                                  <div class="sources-head">References</div>
+                                  @for (h of msg.highlights; track h.chunk_id) {
+                                    <div class="source-entry">
+                                      <button
+                                        type="button"
+                                        class="source-card"
+                                        [style.borderLeftColor]="h.color"
+                                        (click)="openSourcePreview(h.chunk_id)"
+                                      >
+                                        <span class="source-ref">[{{ h.ref_index || $index + 1 }}]</span>
+                                        <span class="source-meta">
+                                          {{ h.filename || ('Document ' + h.document_id.slice(0, 8)) }}
+                                          @if (h.page_number) { · page {{ h.page_number }} }
+                                        </span>
+                                        @if (h.text_snippet) {
+                                          <span class="source-snippet">"{{ h.text_snippet }}"</span>
+                                        }
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="source-doc-btn"
+                                        title="View highlighted passage in document"
+                                        aria-label="View highlighted passage in document"
+                                        (click)="openDocumentView(h)"
+                                      >
+                                        View in document
+                                      </button>
+                                    </div>
+                                  }
                                 </div>
                               }
+                            }
+                          </div>
+                          @if (!msg.error) {
+                            <div class="msg-actions">
+                              <button class="msg-icon-btn" title="Copy answer" (click)="copy(msg.answerMd || '', 'a' + $index)">
+                                {{ copied() === 'a' + $index ? 'Copied' : 'Copy answer' }}
+                              </button>
                             </div>
                           }
-                        }
-                      </div>
-                      @if (!msg.error) {
-                        <div class="msg-actions">
-                          <button class="icon-btn" title="Copy answer" (click)="copy(msg.answerMd || '', 'a' + $index)">
-                            {{ copied() === 'a' + $index ? '✓ Copied' : '⧉ Copy' }}
-                          </button>
                         </div>
-                      }
+                      </div>
                     </div>
                   }
                 }
 
                 @if (loading()) {
-                  <div class="msg assistant-msg thinking">
-                    <span></span><span></span><span></span>
+                  <div class="msg-row assistant">
+                    <div class="msg-row-inner">
+                      <div class="msg-avatar bot" aria-hidden="true">IQ</div>
+                      <div class="msg-body">
+                        <div class="msg-bubble assistant thinking">
+                          <span class="typing"><span></span><span></span><span></span></span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 }
               </div>
 
-              <form class="input-bar" [formGroup]="askForm" (ngSubmit)="ask()">
-                <div class="input-stack">
+              <form class="chat-composer" [formGroup]="askForm" (ngSubmit)="ask()">
+                <div class="chat-composer-stack">
                   <app-prompt-picker
                     [selectedId]="selectedPromptId()"
                     (selectedIdChange)="selectedPromptId.set($event)"
                   />
-                  <div class="input-row">
+                  <div class="chat-composer-row">
                     <input
                       formControlName="question"
-                      placeholder="Ask anything about your documents…"
+                      placeholder="Ask about your documents…"
                       autocomplete="off"
+                      aria-label="Question"
                     />
-                    <button type="submit" class="btn-primary" [disabled]="askForm.invalid || loading()">Ask</button>
+                    <button type="submit" class="btn btn-primary" [disabled]="askForm.invalid || loading()">
+                      {{ loading() ? 'Thinking…' : 'Ask' }}
+                    </button>
                   </div>
+                  <div class="chat-composer-hint">Answers include source citations · Follow-ups keep context</div>
                 </div>
               </form>
             }
@@ -553,57 +588,7 @@ const RAG_PROFILES = [
     .upload-hint { color: var(--text-muted); font-size: var(--text-xs); }
     .upload-area input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
-    /* chat */
-    .chat-area {
-      display: flex; flex-direction: column;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg); overflow: hidden;
-      box-shadow: var(--shadow-sm);
-    }
-    .chat-empty {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: var(--space-4);
-      padding: var(--space-10); text-align: center; color: var(--text-2);
-    }
-    .chat-header {
-      display: flex; align-items: center; gap: 10px; padding: 13px 18px;
-      border-bottom: 1px solid var(--border);
-      font-size: var(--text-base);
-    }
-    .rag-badge {
-      padding: 3px 10px; border-radius: var(--radius-pill);
-      background: var(--primary-soft); color: var(--primary-text); font-size: var(--text-xs); font-weight: 600;
-    }
-    .messages {
-      flex: 1; overflow-y: auto; padding: var(--space-5);
-      display: flex; flex-direction: column; gap: var(--space-4);
-    }
-    .chat-empty-inner { flex: 1; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); color: var(--text-2); }
-    .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
-    .suggestion {
-      padding: 7px 14px; border-radius: var(--radius-pill);
-      border: 1px solid var(--border-strong);
-      background: var(--surface-2);
-      color: var(--text-2); cursor: pointer; font-size: var(--text-sm); font-family: inherit;
-      transition: all var(--dur-fast) var(--ease);
-    }
-    .suggestion:hover { background: var(--primary-soft); color: var(--primary-text); border-color: var(--primary); }
-
-    .msg { max-width: 92%; }
-    .user-msg {
-      align-self: flex-end;
-      background: var(--primary); color: var(--on-primary);
-      border-radius: 14px 14px 3px 14px;
-      padding: 10px 14px; font-size: var(--text-base);
-    }
-    .assistant-msg {
-      align-self: flex-start;
-      background: var(--surface-2);
-      border: 1px solid var(--border);
-      border-radius: 3px 14px 14px 14px;
-      padding: 14px; display: flex; flex-direction: column; gap: 10px;
-    }
+    /* chat — content-specific only; layout from global styles.css */
     .answer { line-height: 1.7; font-size: var(--text-base); }
     .answer :global(cite) { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
     .sources { display: grid; gap: 8px; margin-top: 4px; }
@@ -630,31 +615,15 @@ const RAG_PROFILES = [
     .source-snippet { font-size: var(--text-sm); color: var(--text); line-height: 1.5; }
     .error { color: var(--danger); font-size: var(--text-sm); }
 
-    .thinking { padding: 16px !important; flex-direction: row !important; }
-    .thinking span {
-      display: inline-block; width: 7px; height: 7px;
-      border-radius: 50%; background: var(--primary-text); margin: 0 2px;
-      animation: bounce 1.2s infinite;
+    .edit-box { display: flex; flex-direction: column; gap: 8px; width: min(480px, 100%); }
+    .edit-box textarea {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      padding: 10px 12px; border-radius: var(--radius-md);
+      border: 1px solid var(--border-focus); background: var(--input-bg);
+      color: var(--text); font-size: var(--text-base); font-family: inherit;
     }
-    .thinking span:nth-child(2) { animation-delay: 0.2s; }
-    .thinking span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
-
-    .input-bar {
-      display: flex; gap: 10px; padding: var(--space-4);
-      border-top: 1px solid var(--border);
-      background: var(--surface-2);
-    }
-    .input-stack { flex: 1; display: grid; gap: 8px; }
-    .input-row { display: flex; gap: 10px; }
-    .input-bar input {
-      flex: 1; padding: 10px 14px; border-radius: var(--radius-md);
-      border: 1px solid var(--border-strong);
-      background: var(--input-bg); color: var(--text); font-size: var(--text-base); font-family: inherit;
-      transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-    }
-    .input-bar input:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
-    .upload-section { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+    .edit-box textarea:focus { outline: none; box-shadow: 0 0 0 3px var(--primary-soft); }
+    .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
     /* segmented toggle */
     .seg { display: flex; gap: 4px; padding: 3px; border-radius: var(--radius-md); background: var(--surface-2); border: 1px solid var(--border); }
@@ -698,33 +667,7 @@ const RAG_PROFILES = [
     @keyframes spin { to { transform: rotate(360deg); } }
     .job-detail { font-size: var(--text-xs); color: var(--text-2); line-height: 1.5; }
     .prog { color: var(--text-muted); }
-
-    /* ── message rows + actions ── */
-    .msg-row { display: flex; flex-direction: column; gap: 4px; max-width: 92%; }
-    .msg-row.user { align-self: flex-end; align-items: flex-end; }
-    .msg-row.assistant { align-self: flex-start; align-items: stretch; max-width: 94%; }
-    .msg-actions { display: flex; gap: 4px; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
-    .msg-row:hover .msg-actions { opacity: 1; }
-    .icon-btn {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 8px; border-radius: var(--radius-sm);
-      border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text-muted); cursor: pointer; font-size: var(--text-xs); font-family: inherit;
-      transition: all var(--dur-fast) var(--ease);
-    }
-    .icon-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface-3); }
-
-    /* edit box */
-    .edit-box { display: flex; flex-direction: column; gap: 8px; width: 420px; max-width: 100%; }
-    .edit-box textarea {
-      width: 100%; box-sizing: border-box; resize: vertical;
-      padding: 10px 12px; border-radius: var(--radius-md);
-      border: 1px solid var(--border-focus); background: var(--input-bg);
-      color: var(--text); font-size: var(--text-base); font-family: inherit;
-    }
-    .edit-box textarea:focus { outline: none; box-shadow: 0 0 0 3px var(--primary-soft); }
-    .edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .btn-primary.sm, .btn-ghost.sm { padding: 5px 12px; font-size: var(--text-xs); }
+    .upload-section { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
 
     /* ── markdown rendering ── */
     .markdown { line-height: 1.7; font-size: var(--text-base); color: var(--text); overflow-wrap: anywhere; }
@@ -843,6 +786,7 @@ const RAG_PROFILES = [
 export class TalkToDocsComponent implements OnInit, OnDestroy {
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
+  private readonly messagesPane = viewChild<ElementRef<HTMLElement>>('messagesPane');
 
   readonly collections = signal<Collection[]>([]);
   readonly selectedCollection = signal<Collection | null>(null);
@@ -1007,6 +951,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
         this.messages.set(msgs.map((m) => m.role === 'user'
           ? { role: 'user', question: m.content }
           : { role: 'assistant', answerMd: m.content, highlights: m.metadata_json?.highlight_spans_json ?? [] }));
+        this.scrollToBottom();
       },
       error: () => this.loading.set(false),
     });
@@ -1128,6 +1073,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     this.messages.update((m) => [...m, { role: 'user', question: q }]);
     if (override === undefined) this.askForm.reset();
     this.loading.set(true);
+    this.scrollToBottom();
 
     this.http.post<AskResponse>(`${API_BASE}/talk-to-docs/ask`, {
       collection_id: this.selectedCollection()!.id,
@@ -1146,10 +1092,12 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
           highlights: res.highlight_spans,
         }]);
         if (wasNew) this.reloadConversations();
+        this.scrollToBottom();
       },
       error: (err: { error?: { detail?: string } }) => {
         this.loading.set(false);
         this.messages.update((m) => [...m, { role: 'assistant', error: err?.error?.detail ?? 'Ask failed.' }]);
+        this.scrollToBottom();
       },
     });
   }
@@ -1250,5 +1198,12 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     this.sourcePreview.set(null);
     this.sourcePreviewLoading.set(false);
     this.sourcePreviewOpen.set(false);
+  }
+
+  private scrollToBottom(): void {
+    setTimeout(() => {
+      const el = this.messagesPane()?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 0);
   }
 }

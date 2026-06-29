@@ -64,11 +64,12 @@ const PAGILA_SAMPLE = {
     <div class="page">
       <div class="page-header">
         <div>
+          <span class="label-eyebrow">Connections</span>
           <h1>Datasources</h1>
           <p>Register and manage connections to databases, warehouses, and object stores.</p>
         </div>
         @if (!showForm()) {
-          <button class="btn-primary" (click)="showForm.set(true)">+ Add datasource</button>
+          <button class="btn btn-primary" (click)="showForm.set(true)">+ Add datasource</button>
         }
       </div>
 
@@ -384,8 +385,12 @@ const PAGILA_SAMPLE = {
       <!-- ── Datasource list ── -->
       @if (sources().length === 0 && !showForm()) {
         <div class="empty">
-          <div class="empty-icon">🗄</div>
-          <p>No datasources yet. Click <strong>+ Add datasource</strong> to connect your first database.</p>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/></svg>
+          </div>
+          <h3>No datasources yet</h3>
+          <p>Connect your first database or warehouse to enable Talk to Data.</p>
+          <button class="btn btn-primary" (click)="showForm.set(true)">Add datasource</button>
         </div>
       }
 
@@ -608,12 +613,19 @@ const PAGILA_SAMPLE = {
       flex-direction: column;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow-sm);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-xs);
       overflow: hidden;
-      transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+      transition:
+        border-color var(--dur-fast) var(--ease),
+        box-shadow var(--dur-fast) var(--ease),
+        transform var(--dur-fast) var(--ease-out);
     }
-    .source-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .source-card:hover {
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-md);
+      transform: translateY(-2px);
+    }
     .card-top {
       display: flex; gap: 14px; padding: 16px 16px 12px; cursor: pointer; flex: 1;
     }

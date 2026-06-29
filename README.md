@@ -82,6 +82,7 @@ In the UI: **Datasources → PostgreSQL → Use Pagila sample**, then continue t
 
 ## Documentation
 
+- **[New machine setup guide](insightiq/SETUP.md)** — prerequisites, Docker, Postgres/Redis without Docker, env vars, troubleshooting
 - [Deployment guide](insightiq/DEPLOYMENT.md) — production setup, env vars, secrets
 - [Build spec](CURSOR%20BUILD%20PROMPT.md) — phased plan and engineering rules
 - [Enhancements spec](INSIGHTIQ%20V2%20ENHANCEMENTS.md) — RAG and platform design
