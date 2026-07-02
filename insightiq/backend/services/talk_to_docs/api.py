@@ -4,7 +4,16 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +55,7 @@ class DocumentResponse(BaseModel):
 
 class CreateCollectionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    rag_profile: str = "naive"
+    rag_profile: str = "standard"
 
 
 class AskDocsRequest(BaseModel):
@@ -84,6 +93,9 @@ class AskDocsResponse(BaseModel):
     highlight_spans: list[dict]
     rag_profile_snapshot: dict
     trace: dict
+    confidence: float = 1.0
+    needs_clarification: bool = False
+    clarifying_question: str | None = None
 
 
 @router.post("/collections", response_model=CollectionResponse)
@@ -175,6 +187,13 @@ async def delete_collection(
     except Exception:  # noqa: BLE001 - vector store cleanup is best-effort
         pass
 
+    try:
+        from core.graph.neo4j_store import Neo4jStore
+
+        await Neo4jStore().delete_collection(tenant_id=str(ctx.tenant_id), collection_id=str(col.id))
+    except Exception:  # noqa: BLE001 - graph store cleanup is best-effort
+        pass
+
     return {"status": "deleted", "collection_id": str(col.id)}
 
 
@@ -189,6 +208,8 @@ async def upload_document(
     collection_id: uuid.UUID,
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    document_type: str | None = Form(default=None),
+    tags: str | None = Form(default=None),
     ctx: RequestContext = Depends(require_role(Role.editor)),
     db: AsyncSession = Depends(get_db),
 ) -> IngestionJob:
@@ -201,6 +222,14 @@ async def upload_document(
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    # Principle 5 — optional metadata tags captured at upload time, applied as
+    # Qdrant/BM25 filters at query time.
+    metadata: dict[str, object] = {}
+    if document_type and document_type.strip():
+        metadata["document_type"] = document_type.strip()
+    if tags and tags.strip():
+        metadata["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+
     job = create_job("file", str(col.id))
     background.add_task(
         run_file_ingestion,
@@ -210,6 +239,8 @@ async def upload_document(
         collection_id=str(col.id),
         tenant_id=str(ctx.tenant_id),
         embedding_model=col.embedding_model,
+        metadata=metadata or None,
+        rag_profile=col.rag_profile,
     )
     return job
 
@@ -234,6 +265,7 @@ async def scrape_url(
         collection_id=str(col.id),
         tenant_id=str(ctx.tenant_id),
         embedding_model=col.embedding_model,
+        rag_profile=col.rag_profile,
     )
     return job
 
@@ -332,11 +364,15 @@ async def ask_documents(
         conversation_history=conversation_history,
         system_prompt_override=system_prompt_override,
         generation_instructions=generation_instructions,
+        db=db,
     )
 
     final = result.get("final") or {}
     answer = final.get("answer", "")
     answer_html = final.get("answer_html", answer)
+    confidence = float(final.get("confidence", 1.0))
+    needs_clarification = bool(final.get("needs_clarification", False))
+    clarifying_question = final.get("clarifying_question")
     highlights = await _enrich_highlights(db, ctx.tenant_id, final.get("highlight_spans", []))
 
     await _ensure_conversation(db, ctx, conversation_id, col.id, req.question)
@@ -365,6 +401,8 @@ async def ask_documents(
             "answer_html": answer_html,
             "rag_profile_snapshot_json": snapshot,
             "retrieval_round": result.get("retrieval_round", 0),
+            "confidence": confidence,
+            "needs_clarification": needs_clarification,
         },
     )
     db.add(user_msg)
@@ -378,6 +416,9 @@ async def ask_documents(
         highlight_spans=highlights,
         rag_profile_snapshot=snapshot,
         trace=result.get("trace", {}),
+        confidence=confidence,
+        needs_clarification=needs_clarification,
+        clarifying_question=clarifying_question,
     )
 
 

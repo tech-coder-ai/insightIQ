@@ -10,6 +10,12 @@ from core.rag.state import RagProfile
 
 PROFILES_DIR = Path(__file__).resolve().parents[2] / "config" / "rag_profiles"
 
+# `naive` and `advanced` were merged into a single `standard` profile that
+# implements all 10 RAG principles at once (see the RAG overhaul plan).
+# Existing DocumentCollection rows and API callers using the old names keep
+# working transparently.
+_LEGACY_PROFILE_ALIASES = {"naive": "standard", "advanced": "standard"}
+
 
 class TransformConfig(BaseModel):
     rewrite: bool = False
@@ -33,7 +39,8 @@ class RagProfileConfig(BaseModel):
 
 
 def load_profile(name: str) -> RagProfileConfig:
-    path = PROFILES_DIR / f"{name}.yaml"
+    resolved = _LEGACY_PROFILE_ALIASES.get(name, name)
+    path = PROFILES_DIR / f"{resolved}.yaml"
     if not path.exists():
         raise FileNotFoundError(f"RAG profile not found: {name}")
     data = yaml.safe_load(path.read_text())

@@ -38,6 +38,14 @@ class RetrievedChunk:
     relevance_score: float = 0.0
     rerank_score: float | None = None
     retriever_source: str = "dense"
+    # Parent-child chunking (principle 2): offsets of the larger enclosing
+    # section within Document.content_markdown, and the hydrated parent text
+    # actually sent to the LLM (falls back to `text` when unavailable).
+    parent_char_start: int | None = None
+    parent_char_end: int | None = None
+    context_text: str | None = None
+    document_type: str | None = None
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +59,7 @@ class CriticVerdict:
     groundedness: float
     relevancy: float
     pass_: bool
+    confidence: float = 0.0
     missing_info: list[str] = field(default_factory=list)
 
 
@@ -114,6 +123,9 @@ class RagGraphState(TypedDict, total=False):
     trace: dict[str, Any]
     system_prompt_override: str | None
     generation_instructions: str | None
+    db: Any
+    needs_clarification: bool
+    clarifying_question: str | None
 
 
 @dataclass

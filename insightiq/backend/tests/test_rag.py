@@ -32,12 +32,20 @@ def test_highlight_resolver_strips_markers() -> None:
     assert result.highlight_spans[0].char_start == 10
 
 
-def test_profile_loader_naive_vs_agentic() -> None:
-    naive = load_profile("naive")
+def test_profile_loader_standard_vs_agentic() -> None:
+    standard = load_profile("standard")
     agentic = load_profile("agentic")
-    assert naive.gating is False
+    assert standard.rerank.get("reranker") == "lexical-bm25"
     assert agentic.gating is True
     assert agentic.reflection.get("critic") is True
+
+
+def test_legacy_profile_names_alias_to_standard() -> None:
+    naive = load_profile("naive")
+    advanced = load_profile("advanced")
+    standard = load_profile("standard")
+    assert naive.model_dump() == standard.model_dump()
+    assert advanced.model_dump() == standard.model_dump()
 
 
 @pytest.mark.asyncio
@@ -49,6 +57,6 @@ async def test_rag_engine_naive_runs_without_collections() -> None:
         query="hello",
         tenant_id="00000000-0000-0000-0000-000000000001",
         collection_ids=["00000000-0000-0000-0000-000000000099"],
-        profile_name="naive",
+        profile_name="standard",
     )
     assert "final" in result or result.get("draft_answer")

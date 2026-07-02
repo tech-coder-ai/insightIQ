@@ -27,6 +27,13 @@ class QdrantSettings(BaseModel):
     url: str = "http://localhost:6333"
 
 
+class Neo4jSettings(BaseModel):
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: str = Field(default="neo4jpassword", repr=False)
+    database: str = "neo4j"
+
+
 class StorageSettings(BaseModel):
     upload_dir: str = "uploads"
 
@@ -70,6 +77,7 @@ class AppSettings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     jwt: JwtSettings = JwtSettings()
     qdrant: QdrantSettings = QdrantSettings()
+    neo4j: Neo4jSettings = Neo4jSettings()
     storage: StorageSettings = StorageSettings()
     redis: RedisSettings = RedisSettings()
     telemetry: TelemetrySettings = TelemetrySettings()

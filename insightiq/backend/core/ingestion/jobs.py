@@ -8,11 +8,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-import core.ingestion.chunkers.recursive  # noqa: F401 — register chunker
+import core.ingestion.chunkers.markdown_aware  # noqa: F401 — register chunker
+import core.ingestion.chunkers.recursive  # noqa: F401 — register chunker (legacy/tests)
 from core.ingestion.chunkers.factory import CHUNKERS
 from core.ingestion.pipeline_router import extract_document
 from core.ingestion.web_scraper import crawl
 from core.models import Document, DocumentChunk
+from core.retrieval.bm25_index import invalidate_bm25_cache
 from core.retrieval.qdrant_store import QdrantStore
 
 # Ordered stages, surfaced to the UI as a stepper.
@@ -77,6 +79,42 @@ def _set(job: IngestionJob, *, stage: str, detail: str) -> None:
     job.detail = detail
 
 
+_GRAPH_ENABLED_PROFILES = {"graph", "agentic"}
+
+
+async def _sync_chunks_to_graph(
+    chunks: list[dict[str, Any]], *, tenant_id: str, collection_id: str, document_id: str
+) -> str:
+    """Entity/relationship extraction as an ingestion stage (Workstream 2 —
+    GraphRAG). Best-effort: ingestion still succeeds even if Neo4j is
+    unreachable or misconfigured, it just skips graph sync for this document."""
+    try:
+        from core.graph.entity_extractor import extract_entities
+        from core.graph.neo4j_store import Neo4jStore
+
+        store = Neo4jStore()
+        synced_any = False
+        for c in chunks:
+            extraction = await extract_entities(c["text"])
+            if not extraction.entities:
+                continue
+            await store.upsert_chunk_graph(
+                tenant_id=tenant_id,
+                collection_id=collection_id,
+                document_id=document_id,
+                chunk_id=c["chunk_id"],
+                chunk_text=c["text"],
+                char_start=c["char_start"],
+                char_end=c["char_end"],
+                entities=[e.model_dump() for e in extraction.entities],
+                relationships=[r.model_dump() for r in extraction.relationships],
+            )
+            synced_any = True
+        return "ok" if synced_any else "no_entities"
+    except Exception:  # noqa: BLE001 - Neo4j is optional; ingestion must not fail because of it
+        return "error"
+
+
 async def _index_markdown(
     session: Any,
     store: QdrantStore,
@@ -88,10 +126,22 @@ async def _index_markdown(
     embedding_model: str,
     extractor_used: str,
     confidence: float,
+    metadata: dict[str, Any] | None = None,
+    rag_profile: str = "standard",
 ) -> dict[str, Any]:
     """Chunk, embed/index, and persist a single document. Returns a summary dict."""
     doc_id = uuid.uuid4()
-    chunks = CHUNKERS.create("recursive").chunk(markdown, document_id=str(doc_id))
+    # Layout-aware chunking with parent-child offsets (RAG principles 1 & 2).
+    chunks = CHUNKERS.create("markdown_aware").chunk(markdown, document_id=str(doc_id))
+
+    document_type = (metadata or {}).get("document_type")
+    tags = (metadata or {}).get("tags") or []
+    if document_type or tags:
+        for c in chunks:
+            if document_type:
+                c["document_type"] = document_type
+            if tags:
+                c["tags"] = tags
 
     await store.upsert_chunks(
         collection_id,
@@ -99,7 +149,20 @@ async def _index_markdown(
         chunks=chunks,
         embedder_key=embedding_model,
     )
+    invalidate_bm25_cache(collection_id)
 
+    graph_sync_status = "skipped"
+    if rag_profile in _GRAPH_ENABLED_PROFILES:
+        graph_sync_status = await _sync_chunks_to_graph(
+            chunks, tenant_id=tenant_id, collection_id=collection_id, document_id=str(doc_id)
+        )
+
+    doc_metadata = {
+        "extractor_used": extractor_used,
+        "confidence": confidence,
+        "graph_sync_status": graph_sync_status,
+        **(metadata or {}),
+    }
     session.add(
         Document(
             id=doc_id,
@@ -107,7 +170,7 @@ async def _index_markdown(
             tenant_id=uuid.UUID(tenant_id),
             filename=filename,
             content_markdown=markdown,
-            metadata_json={"extractor_used": extractor_used, "confidence": confidence},
+            metadata_json=doc_metadata,
         )
     )
     for c in chunks:
@@ -122,6 +185,8 @@ async def _index_markdown(
                 char_end=c["char_end"],
                 page_number=c.get("page_number"),
                 qdrant_point_id=c.get("qdrant_point_id"),
+                parent_char_start=c.get("parent_char_start"),
+                parent_char_end=c.get("parent_char_end"),
             )
         )
     return {"document_id": str(doc_id), "filename": filename, "chunks": len(chunks)}
@@ -135,6 +200,8 @@ async def run_file_ingestion(
     collection_id: str,
     tenant_id: str,
     embedding_model: str,
+    metadata: dict[str, Any] | None = None,
+    rag_profile: str = "standard",
 ) -> None:
     from core.deps import get_app_sessionmaker
 
@@ -161,6 +228,8 @@ async def run_file_ingestion(
                 embedding_model=embedding_model,
                 extractor_used=extractor_used,
                 confidence=confidence,
+                metadata=metadata,
+                rag_profile=rag_profile,
             )
             _set(job, stage=STAGE_SAVING, detail="Saving to database…")
             await session.commit()
@@ -184,6 +253,7 @@ async def run_scrape_ingestion(
     collection_id: str,
     tenant_id: str,
     embedding_model: str,
+    rag_profile: str = "standard",
 ) -> None:
     from core.deps import get_app_sessionmaker
 
@@ -230,6 +300,7 @@ async def run_scrape_ingestion(
                     embedding_model=embedding_model,
                     extractor_used=extractor_used,
                     confidence=confidence,
+                    rag_profile=rag_profile,
                 )
                 summaries.append(summary)
                 job.progress_current = idx

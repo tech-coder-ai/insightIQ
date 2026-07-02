@@ -110,7 +110,7 @@ async def _resolve_rag_binding(
     if not query:
         raise ValueError(f"rag binding requires variable '{query_key}' or 'question'")
 
-    profile = str(bindings.get("rag_profile") or col.rag_profile or "naive")
+    profile = str(bindings.get("rag_profile") or col.rag_profile or "standard")
     engine = RagEngine()
     result = await engine.run(
         query=query,

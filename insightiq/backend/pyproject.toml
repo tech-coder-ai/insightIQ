@@ -34,6 +34,8 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
   "reportlab>=4.2.0",
   "python-pptx>=1.0.2",
+  "rank-bm25>=0.2.2",
+  "neo4j>=5.24.0",
 ]
 
 [project.optional-dependencies]

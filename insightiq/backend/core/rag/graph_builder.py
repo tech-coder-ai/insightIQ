@@ -5,6 +5,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from core.rag.nodes import (
+    node_clarify,
     node_critic,
     node_curate,
     node_fuse,
@@ -53,6 +54,9 @@ def build_graph(cfg: RagProfileConfig):
     async def highlight(s: dict[str, Any]) -> dict[str, Any]:
         return await node_highlight(s, cfg)
 
+    async def clarify(s: dict[str, Any]) -> dict[str, Any]:
+        return await node_clarify(s, cfg)
+
     async def prepare_retry(s: dict[str, Any]) -> dict[str, Any]:
         return {"retrieval_round": int(s.get("retrieval_round", 0)) + 1}
 
@@ -66,6 +70,7 @@ def build_graph(cfg: RagProfileConfig):
     graph.add_node("generate", generate)
     graph.add_node("critic", critic)
     graph.add_node("highlight", highlight)
+    graph.add_node("clarify", clarify)
     graph.add_node("prepare_retry", prepare_retry)
 
     graph.add_edge(START, "understand")
@@ -111,10 +116,17 @@ def build_graph(cfg: RagProfileConfig):
             critic_result = state.get("critic") or {}
             if not critic_result.get("pass_") and state.get("retrieval_round", 0) < max_rounds:
                 return "retry"
+            if not critic_result.get("pass_") and critic_result.get("confidence", 1.0) < 0.5:
+                return "clarify"
             return "highlight"
 
-        graph.add_conditional_edges("critic", after_critic, {"retry": "prepare_retry", "highlight": "highlight"})
+        graph.add_conditional_edges(
+            "critic",
+            after_critic,
+            {"retry": "prepare_retry", "highlight": "highlight", "clarify": "clarify"},
+        )
         graph.add_edge("prepare_retry", "retrieve")
+        graph.add_edge("clarify", "highlight")
     else:
         graph.add_edge("generate", "highlight")
 

@@ -1,4 +1,7 @@
-profile: advanced
+# Merges the old `naive` and `advanced` profiles into one profile that
+# exercises all 10 advanced RAG principles by default (layout-aware parsing +
+# parent-child chunking always apply at ingestion time regardless of profile).
+profile: standard
 gating: true
 transform:
   rewrite: true
@@ -11,9 +14,10 @@ retrieval:
   embedder: hash-dev
   retriever: hybrid
   top_k: 15
+  metadata_filtering: true
 fusion: rrf
 rerank:
-  reranker: cross-encoder-heuristic
+  reranker: lexical-bm25
   top_k: 5
   min_relevance_threshold: 0.5
 curation:

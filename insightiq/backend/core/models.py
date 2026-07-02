@@ -99,7 +99,7 @@ class DocumentCollection(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     name: Mapped[str] = mapped_column(String(200))
-    rag_profile: Mapped[str] = mapped_column(String(64), default="naive")
+    rag_profile: Mapped[str] = mapped_column(String(64), default="standard")
     embedding_model: Mapped[str] = mapped_column(String(128), default="hash-dev")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -129,6 +129,10 @@ class DocumentChunk(Base):
     char_end: Mapped[int] = mapped_column()
     page_number: Mapped[int | None] = mapped_column(nullable=True)
     qdrant_point_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Parent-child chunking (RAG principle 2): the larger enclosing section this
+    # child chunk belongs to, sliced on demand from Document.content_markdown.
+    parent_char_start: Mapped[int | None] = mapped_column(nullable=True)
+    parent_char_end: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class Dashboard(Base):

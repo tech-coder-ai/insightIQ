@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from core.rag.graph_builder import build_graph
 from core.rag.profiles import load_profile, to_rag_profile
 from core.rag.state import Message
@@ -12,10 +14,11 @@ class RagEngine:
         query: str,
         tenant_id: str,
         collection_ids: list[str],
-        profile_name: str = "naive",
+        profile_name: str = "standard",
         conversation_history: list[Message] | None = None,
         system_prompt_override: str | None = None,
         generation_instructions: str | None = None,
+        db: Any | None = None,
     ) -> dict:
         cfg = load_profile(profile_name)
         graph = build_graph(cfg)
@@ -31,5 +34,6 @@ class RagEngine:
             "trace": {},
             "system_prompt_override": system_prompt_override,
             "generation_instructions": generation_instructions,
+            "db": db,
         }
         return await graph.ainvoke(initial)

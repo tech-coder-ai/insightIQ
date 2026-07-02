@@ -11,9 +11,10 @@ retrieval:
   embedder: hash-dev
   retriever: hybrid
   top_k: 15
+  metadata_filtering: true
 fusion: rrf
 rerank:
-  reranker: cross-encoder-heuristic
+  reranker: lexical-bm25
   top_k: 5
   min_relevance_threshold: 0.5
 curation:
