@@ -17,7 +17,13 @@ from core.response.types import ResponsePayload, ResponseType
 
 @CARD_REFRESHERS.register("prompt")
 class PromptCardRefresher(ICardRefresher):
-    async def refresh(self, *, source_config: dict[str, Any], tenant_id: str) -> RefreshResult:
+    async def refresh(
+        self,
+        *,
+        source_config: dict[str, Any],
+        tenant_id: str,
+        filters: dict[str, Any] | None = None,
+    ) -> RefreshResult:
         version_id = uuid.UUID(source_config["version_id"])
         template_id = uuid.UUID(source_config["template_id"])
         variables = source_config.get("variables", {})

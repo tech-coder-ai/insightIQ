@@ -9,11 +9,21 @@ from core.response.types import ResponsePayload
 
 @CARD_REFRESHERS.register("rag")
 class RagCardRefresher(ICardRefresher):
-    async def refresh(self, *, source_config: dict[str, Any], tenant_id: str) -> RefreshResult:
+    async def refresh(
+        self,
+        *,
+        source_config: dict[str, Any],
+        tenant_id: str,
+        filters: dict[str, Any] | None = None,
+    ) -> RefreshResult:
         collection_id = source_config["collection_id"]
         question = source_config["question"]
+        if filters:
+            filter_bits = ", ".join(f"{k}={v}" for k, v in filters.items() if v)
+            if filter_bits:
+                question = f"{question} (constraints: {filter_bits})"
         snapshot = source_config.get("rag_profile_snapshot") or {}
-        profile = snapshot.get("profile") or source_config.get("rag_profile", "naive")
+        profile = snapshot.get("profile") or source_config.get("rag_profile", "standard")
         engine = RagEngine()
         result = await engine.run(
             query=question,

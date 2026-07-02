@@ -62,11 +62,14 @@ async def export_conversation(
 async def export_dashboard(
     dashboard_id: uuid.UUID,
     format: str = Query(default="pdf", pattern=r"^(pdf|pptx|markdown)$"),
+    include_filters: bool = Query(default=True),
     ctx: RequestContext = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     dash = await _get_dashboard(db, ctx, dashboard_id)
-    payload = await build_dashboard_export_payload(db, dashboard=dash, tenant_id=ctx.tenant_id)
+    payload = await build_dashboard_export_payload(
+        db, dashboard=dash, tenant_id=ctx.tenant_id, include_filters=include_filters
+    )
     exporter = ExporterFactory.create(format)
     result = await exporter.export(payload=payload)
     await db.commit()

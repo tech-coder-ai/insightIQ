@@ -31,10 +31,16 @@ def _card_summary(card: DashboardCard) -> str:
 
 
 async def build_dashboard_export_payload(
-    db: Any, *, dashboard: Dashboard, tenant_id: uuid.UUID
+    db: Any,
+    *,
+    dashboard: Dashboard,
+    tenant_id: uuid.UUID,
+    include_filters: bool = True,
 ) -> ExportPayload:
     cards_res = await db.execute(select(DashboardCard).where(DashboardCard.dashboard_id == dashboard.id))
     cards = cards_res.scalars().all()
+    active_filters = dict(dashboard.global_filters_json or {}) if include_filters else {}
+    active_filters = {k: v for k, v in active_filters.items() if v}
     refreshed: list[dict[str, str]] = []
     for card in cards:
         snapshot = dict(card.snapshot_response_json or {})
@@ -42,7 +48,9 @@ async def build_dashboard_export_payload(
             try:
                 refresher = CardRefresherFactory.create(card.source_type)
                 result = await refresher.refresh(
-                    source_config=card.source_config_json, tenant_id=str(tenant_id)
+                    source_config=card.source_config_json,
+                    tenant_id=str(tenant_id),
+                    filters=active_filters or None,
                 )
                 snapshot = result.response
                 card.snapshot_response_json = snapshot
@@ -59,7 +67,7 @@ async def build_dashboard_export_payload(
     return ExportPayload(
         title=dashboard.name,
         content_type="dashboard",
-        data={"cards": refreshed},
+        data={"cards": refreshed, "filters": active_filters},
     )
 
 

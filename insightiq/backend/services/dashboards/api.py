@@ -311,8 +311,13 @@ async def refresh_card(
     if card.refresh_mode == "snapshot":
         return _card_response(card)
 
+    dash = await _get_dashboard(db, ctx, dashboard_id)
     refresher = CardRefresherFactory.create(card.source_type)
-    result = await refresher.refresh(source_config=card.source_config_json, tenant_id=str(ctx.tenant_id))
+    result = await refresher.refresh(
+        source_config=card.source_config_json,
+        tenant_id=str(ctx.tenant_id),
+        filters=dash.global_filters_json or None,
+    )
     card.snapshot_response_json = result.response
     await db.commit()
     await db.refresh(card)
