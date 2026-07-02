@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from core.ingestion.base import IExtractor
 from core.ingestion.extractors.factory import EXTRACTORS
@@ -46,7 +47,6 @@ def _extract_pdf(file_path: str) -> tuple[str, float]:
 
 def _ocr_page(page: object) -> str:
     try:
-        import pytesseract
         from PIL import Image
     except ImportError:
         return ""
@@ -54,6 +54,54 @@ def _ocr_page(page: object) -> str:
     try:
         pix = page.get_pixmap(dpi=200)  # type: ignore[attr-defined]
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        return (pytesseract.image_to_string(img) or "").strip()
     except Exception:  # noqa: BLE001 - OCR is best-effort
+        return ""
+
+    # Prefer RapidOCR: pure-pip, models ship inside the wheel, no system binary needed.
+    # Falls back to pytesseract for anyone who already has the Tesseract engine installed.
+    text = _ocr_with_rapidocr(img)
+    if text:
+        return text
+    return _ocr_with_pytesseract(img)
+
+
+_rapidocr_engine: object | None = None
+
+
+def _get_rapidocr_engine() -> object:
+    global _rapidocr_engine
+    if _rapidocr_engine is None:
+        from rapidocr import RapidOCR
+
+        _rapidocr_engine = RapidOCR()
+        # Silence RapidOCR's INFO-level "Using engine_name: ..." chatter on future calls.
+        # `setLevel()` gets reset internally by the library, but `disabled` is never touched.
+        logging.getLogger("RapidOCR").disabled = True
+    return _rapidocr_engine
+
+
+def _ocr_with_rapidocr(img: object) -> str:
+    try:
+        import numpy as np
+    except ImportError:
+        return ""
+
+    try:
+        engine = _get_rapidocr_engine()
+        result = engine(np.array(img))
+        txts = getattr(result, "txts", None) or ()
+        return "\n".join(t for t in txts if t).strip()
+    except Exception:  # noqa: BLE001 - RapidOCR not installed, or OCR failed on this page
+        return ""
+
+
+def _ocr_with_pytesseract(img: object) -> str:
+    try:
+        import pytesseract
+    except ImportError:
+        return ""
+
+    try:
+        return (pytesseract.image_to_string(img) or "").strip()
+    except Exception:  # noqa: BLE001 - system tesseract binary not installed
         return ""

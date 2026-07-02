@@ -48,6 +48,12 @@ connectors = [
   "thrift>=0.20.0",
   "google-cloud-bigquery>=3.25.0",
 ]
+# OCR fallback for scanned/image PDFs (Talk to Docs ingestion). Pure pip, no system
+# Tesseract binary required — models ship inside the wheel. Install with: uv sync --extra ocr
+ocr = [
+  "rapidocr>=3.0.0",
+  "onnxruntime>=1.19.0",
+]
 
 [dependency-groups]
 dev = [

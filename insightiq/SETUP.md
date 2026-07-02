@@ -2,7 +2,7 @@
 
 Use this document to install and run the full InsightIQ stack on a fresh laptop or server.
 
-> **Setting up on Windows?** Jump to **[§ Windows setup](#windows-setup)** for Docker Desktop, PowerShell commands, WSL2 notes, and Postgres/Redis without Docker on Windows.
+> **Setting up on Windows?** Jump to **[§ Windows setup](#windows-setup)** for Docker Desktop, PowerShell commands, WSL2 notes, and Postgres/Redis without Docker on Windows. Want to skip Docker entirely? See **[§ Fully native Windows setup (no Docker at all)](#fully-native-windows-setup-no-docker-at-all)**.
 
 ---
 
@@ -82,30 +82,36 @@ export OPENAI_BASE_URL="https://..."       # optional, for Groq/Together/vLLM/et
 
 | Tool | When you need it |
 |------|------------------|
-| **Tesseract OCR** + **pytesseract** | Scanned/image PDF ingestion (Talk to Docs OCR fallback) |
+| **OCR extra** (`uv sync --extra ocr`) | Scanned/image PDF ingestion (Talk to Docs OCR fallback) — no system install needed, see below |
 | **Enterprise DB drivers** | `uv sync --extra connectors` for MSSQL, Oracle, Snowflake, Hive, BigQuery |
-| **Neo4j** (via Docker) | Graph RAG profile only |
+| **Neo4j** (via Docker, or point at a remote instance) | Graph RAG profile only |
 | **Jaeger / Prometheus / Grafana** | Local observability (already in `docker-compose.yml`) |
 
-OCR on macOS:
+**OCR (all platforms, pip-only — no Tesseract binary required):**
 
 ```bash
-brew install tesseract
-cd insightiq/backend && uv add pytesseract   # if not already in your env
+cd insightiq/backend
+uv sync --extra ocr
 ```
+
+This installs [RapidOCR](https://github.com/RapidAI/RapidOCR) + ONNX Runtime. Unlike Tesseract, RapidOCR is a pure-Python package — the recognition models ship inside the wheel, so there's nothing to install at the OS level (no Homebrew, no apt package, no Windows `.exe` installer). It works identically on macOS/Linux/Windows.
+
+`pytesseract` + a system Tesseract install is still supported as a legacy fallback (`_ocr_with_pytesseract` in `core/ingestion/extractors/ocr_pdf.py` runs if RapidOCR isn't installed or finds no text), but you don't need it — RapidOCR is tried first and is sufficient on its own. If you'd rather use Tesseract specifically (e.g. for a language RapidOCR doesn't cover well), see the Windows Tesseract link below or `brew install tesseract` / `apt install tesseract-ocr`, plus `uv add pytesseract`.
+
+> Note: PyPI packages named `tesseract-ocr-data` / `tessdata` only bundle Tesseract's trained **language data files**, not the actual OCR engine binary. Since `pytesseract` just shells out to the `tesseract` executable, installing those packages alone does **not** avoid the system install — RapidOCR (above) is the real pip-only alternative.
 
 ---
 
 ## Windows setup
 
-This section is for **Windows 10/11**. The recommended path is **Docker Desktop + native PowerShell** (or Windows Terminal). WSL2 is optional but works well if you already use Ubuntu daily.
+This section is for **Windows 10/11**. The recommended path is **Docker Desktop + native PowerShell** (or Windows Terminal). WSL2 is optional but works well if you already use Ubuntu daily. Docker isn't strictly required — see **[§ Fully native Windows setup (no Docker at all)](#fully-native-windows-setup-no-docker-at-all)** if you'd rather run Postgres/Qdrant/etc. as native Windows binaries.
 
 ### Windows prerequisites (install order)
 
 | Tool | How to install | Notes |
 |------|----------------|-------|
 | **Git for Windows** | https://git-scm.com/download/win | Includes **Git Bash** (needed for Pagila shell script) |
-| **Docker Desktop** | https://www.docker.com/products/docker-desktop/ | Enable **WSL2 backend** when prompted; requires virtualization in BIOS |
+| **Docker Desktop** *(optional)* | https://www.docker.com/products/docker-desktop/ | Enable **WSL2 backend** when prompted; requires virtualization in BIOS. Skip if going fully native — see below |
 | **Python 3.12+** | https://www.python.org/downloads/ | Check **“Add python.exe to PATH”** during install |
 | **uv** | `powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"` | Restart terminal after install |
 | **Node.js 20 LTS** | https://nodejs.org/ | Includes npm |
@@ -117,7 +123,7 @@ Optional:
 |------|---------|
 | **Windows Terminal** | Microsoft Store — better tabs than cmd.exe |
 | **WSL2 + Ubuntu** | `wsl --install` — optional; run the same Linux commands from SETUP.md inside Ubuntu |
-| **Tesseract OCR** | https://github.com/UB-Mannheim/tesseract/wiki — add install folder to PATH |
+| **OCR support** | `uv sync --extra ocr` (from `backend/`) — pip-only via RapidOCR, **no separate Windows installer needed**. Only install [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki) if you specifically want the legacy engine instead. |
 
 ### Clone repo (PowerShell)
 
@@ -255,6 +261,71 @@ Test: `docker compose exec redis redis-cli ping` or `redis-cli ping` if installe
 | **Cloud** | Set `$env:INSIGHTIQ_DATABASE__URL = "postgresql+asyncpg://user:pass@host:5432/dbname"` |
 
 After native Postgres install, ensure port **5432** is not blocked by Windows Firewall for local connections.
+
+### Fully native Windows setup (no Docker at all)
+
+Yes — every service InsightIQ needs has a native Windows build, so Docker Desktop is **not required**. This is a good option if you can't install Docker (BIOS virtualization disabled, corporate policy, low RAM, etc.).
+
+| Service | Required? | Native Windows option |
+|---------|-----------|------------------------|
+| **PostgreSQL** | Yes | Official Windows installer |
+| **Qdrant** | Yes — Talk to Docs (RAG) | Standalone `qdrant.exe` (no install needed) |
+| **Redis** | Optional | [Memurai](https://www.memurai.com/) (Redis-compatible for Windows), or just skip it |
+| **MinIO** | Optional — only if you want a *local* S3-compatible bucket for demos; app file uploads default to local disk | Standalone `minio.exe`, **or skip it and point at any remote S3-compatible endpoint you already have** |
+| **Neo4j** | Optional — only for the Graph RAG profile | **Point at a remote/managed Neo4j instance (Aura, your own server, etc.) — no local install needed at all** |
+
+**1. PostgreSQL** — see [§ If you don't have PostgreSQL on Windows](#if-you-dont-have-postgresql-on-windows) above, "Native installer" row. Create user/db `insightiq`/`insightiq`.
+
+**2. Qdrant (no installer needed):**
+
+```powershell
+mkdir C:\dev\qdrant
+cd C:\dev\qdrant
+# Download qdrant-x86_64-pc-windows-msvc.zip from https://github.com/qdrant/qdrant/releases/latest
+# Extract it here, then:
+.\qdrant.exe
+```
+
+- Requires the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (install it if `qdrant.exe` closes instantly with no error).
+- Don't double-click `qdrant.exe` in Explorer — always launch it from a PowerShell/terminal window so it stays attached and you can see logs.
+- Always launch it from the **same folder** so it reuses the same `./storage` data directory (or set `$env:QDRANT__STORAGE__STORAGE_PATH` explicitly).
+- Verify: `curl.exe http://localhost:6333/healthz`.
+- To run it in the background permanently, wrap it as a Windows service with [NSSM](https://nssm.cc/) or [WinSW](https://github.com/winsw/winsw), or just leave a terminal tab open for local dev.
+
+**3. Redis (optional):**
+
+- Easiest: install [Memurai Developer Edition](https://www.memurai.com/get-memurai) (free), which listens on `localhost:6379` just like Redis — no code changes needed.
+- Or skip it entirely: `$env:INSIGHTIQ_RATE_LIMIT__ENABLED = "false"`. Rate limiting and the event bus are the only things that use Redis; login, Talk to Data, and Talk to Docs all work without it.
+
+**4. S3 / MinIO (optional, only relevant to the `s3_object_store` datasource type):**
+
+The S3 connector (`insightiq/backend/core/data/connectors/s3_object_store.py`) is a thin wrapper around DuckDB's `httpfs` extension — it talks to **any S3-compatible endpoint**, not specifically MinIO. When you add an S3 datasource in the UI you fill in `endpoint`, `region`, `access_key`, `secret_key`, and `url_style`, so:
+
+- **Already have a bucket** (real AWS S3, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, or a MinIO/other S3 server running elsewhere)? **You don't need MinIO at all.** Just point `endpoint` at that service (e.g. `s3.amazonaws.com` for AWS, `us-east-1` region, `url_style: vhost`) and use its real access/secret keys.
+- **Want a free local bucket for demos** with no cloud account? Then run MinIO — yes, it's available on Windows as a plain `.exe`, no Docker needed:
+
+  ```powershell
+  mkdir C:\dev\minio-data
+  # Download https://dl.min.io/server/minio/release/windows-amd64/minio.exe into C:\dev\minio
+  cd C:\dev\minio
+  .\minio.exe server C:\dev\minio-data --console-address ":9001"
+  ```
+
+  Default credentials are `minioadmin` / `minioadmin`; console is at http://localhost:9001. In the datasource form, use `endpoint: localhost:9000`, `url_style: path`.
+
+**5. Neo4j (optional, only for the Graph RAG profile):** if you already have a remote or managed Neo4j instance (e.g. [Neo4j Aura](https://neo4j.com/product/auradb/), a server elsewhere, or one running for another project), just point the backend at it — **no local install required**:
+
+```powershell
+$env:INSIGHTIQ_NEO4J__URI = "bolt://your-remote-host:7687"   # or "neo4j+s://xxxx.databases.neo4j.io" for Aura
+$env:INSIGHTIQ_NEO4J__USERNAME = "neo4j"
+$env:INSIGHTIQ_NEO4J__PASSWORD = "your-password"
+```
+
+Only install **Neo4j Desktop** locally if you don't already have a remote instance to use.
+
+**6. Backend and frontend** — identical to [§ Step 2 — Backend](#step-2--backend-powershell) and [§ Step 3 — Frontend](#step-3--frontend-powershell-new-terminal) above; `uv` and `npm` already run natively on Windows, Docker was only ever used for the infra containers.
+
+With Postgres and Qdrant running natively and `INSIGHTIQ_RATE_LIMIT__ENABLED=false` (if skipping Redis), you have a fully Docker-free InsightIQ dev environment on Windows.
 
 ### Windows troubleshooting
 
@@ -601,6 +672,15 @@ uv sync --extra connectors
 ```
 
 Adds: pymssql, oracledb, snowflake-connector-python, PyHive, google-cloud-bigquery.
+
+**OCR for scanned PDFs (optional):**
+
+```bash
+cd insightiq/backend
+uv sync --extra ocr
+```
+
+Adds: RapidOCR + ONNX Runtime — pure pip, no system Tesseract install required (see [§ 2. Prerequisites](#2-prerequisites)).
 
 ---
 
