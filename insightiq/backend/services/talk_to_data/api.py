@@ -194,6 +194,7 @@ class SqlProposal:
     interpretation: str
     sql: str
     original_question: str = ""
+    suggested_rephrase: str = ""
 
 
 @dataclass
@@ -201,6 +202,25 @@ class SqlResolution:
     sql: str | None = None
     clarification: str | None = None
     proposal: SqlProposal | None = None
+
+
+@dataclass
+class SqlJudgement:
+    """Confidence score + verdict for a candidate SQL query before it runs."""
+
+    sql: str | None = None
+    confidence: float = 0.0
+    interpretation: str = ""
+    clarifying_question: str | None = None
+    suggested_rephrase: str | None = None
+
+
+# Confidence thresholds driving the run / confirm / clarify decision:
+# >= _CONFIDENCE_AUTO_RUN  -> execute immediately, no confirmation needed.
+# [_CONFIDENCE_CLARIFY, _CONFIDENCE_AUTO_RUN) -> show the proposed SQL and ask to confirm.
+# < _CONFIDENCE_CLARIFY -> too unsure to propose SQL at all; ask a clarifying question.
+_CONFIDENCE_AUTO_RUN = 0.75
+_CONFIDENCE_CLARIFY = 0.4
 
 
 @router.post("/sources/preview-schema", response_model=SchemaMetadata)
@@ -696,6 +716,46 @@ async def ask(
     conversation_id = req.conversation_id or uuid.uuid4()
     await _ensure_conversation(db, ctx, conversation_id, ds.id, req.question)
 
+    pending: dict[str, str] | None = None
+    if req.conversation_id:
+        pending = await _get_pending_proposal(db, ctx, req.conversation_id)
+
+    intent = await _classify_message_intent(req.question, has_pending_proposal=bool(pending))
+
+    if intent == "smalltalk":
+        message = _smalltalk_reply(req.question) or _SMALLTALK_REPLIES["acknowledge"]
+        response = format_explanation(output=message, title=req.question)
+        await _persist_ask_messages(
+            db,
+            ctx=ctx,
+            conversation_id=conversation_id,
+            datasource_id=ds.id,
+            question=req.question,
+            sql="",
+            response=response,
+        )
+        return AskResponse(conversation_id=conversation_id, sql="", response=response)
+
+    if intent == "reject" and pending and req.conversation_id:
+        message = "No problem — rephrase your question with the table and metric you want."
+        response = format_explanation(output=message, title=pending.get("original_question") or req.question)
+        await _persist_ask_messages(
+            db,
+            ctx=ctx,
+            conversation_id=req.conversation_id,
+            datasource_id=ds.id,
+            question=req.question,
+            sql="",
+            response=response,
+            awaiting_confirmation=False,
+        )
+        return AskResponse(
+            conversation_id=req.conversation_id,
+            sql="",
+            response=response,
+            clarification=message,
+        )
+
     prior_history: list[LLMMessage] = []
     if req.conversation_id:
         prior_history = await load_llm_history(db, ctx, req.conversation_id)
@@ -725,41 +785,35 @@ async def ask(
             system_prompt = f"{system_prompt}\n\n" + "\n\n".join(extras)
 
     async with open_connector(ds.db_type, ds.connection_config_json) as connector:
-        if req.conversation_id and _is_affirmative(req.question):
-            pending = await _get_pending_proposal(db, ctx, req.conversation_id)
-            if pending:
-                return await _execute_confirmed_proposal(
-                    db,
-                    ctx=ctx,
-                    ds=ds,
-                    schema=schema,
-                    connector=connector,
-                    conversation_id=req.conversation_id,
-                    question=req.question,
-                    pending=pending,
-                )
+        if intent == "confirm" and pending and req.conversation_id:
+            return await _execute_confirmed_proposal(
+                db,
+                ctx=ctx,
+                ds=ds,
+                schema=schema,
+                connector=connector,
+                conversation_id=req.conversation_id,
+                question=req.question,
+                pending=pending,
+            )
 
-        if req.conversation_id and _is_negative(req.question):
-            pending = await _get_pending_proposal(db, ctx, req.conversation_id)
-            if pending:
-                message = "No problem — rephrase your question with the table and metric you want."
-                response = format_explanation(output=message, title=pending.get("original_question") or req.question)
-                await _persist_ask_messages(
-                    db,
-                    ctx=ctx,
-                    conversation_id=req.conversation_id,
-                    datasource_id=ds.id,
-                    question=req.question,
-                    sql="",
-                    response=response,
-                    awaiting_confirmation=False,
-                )
-                return AskResponse(
-                    conversation_id=req.conversation_id,
-                    sql="",
-                    response=response,
-                    clarification=message,
-                )
+        direct_answer = await _maybe_answer_from_context(
+            question=req.question,
+            history=prior_history,
+            schema=schema,
+        )
+        if direct_answer:
+            response = format_explanation(output=direct_answer, title=req.question)
+            await _persist_ask_messages(
+                db,
+                ctx=ctx,
+                conversation_id=conversation_id,
+                datasource_id=ds.id,
+                question=req.question,
+                sql="",
+                response=response,
+            )
+            return AskResponse(conversation_id=conversation_id, sql="", response=response)
 
         resolution = await _resolve_sql_or_clarify(
             dialect=ds.dialect,
@@ -780,6 +834,7 @@ async def ask(
                 conversation_id=conversation_id,
                 question=req.question,
                 proposal=resolution.proposal,
+                history=prior_history,
             )
 
         if resolution.clarification:
@@ -789,6 +844,7 @@ async def ask(
                 question=req.question,
                 connector=connector,
                 context=resolution.clarification,
+                history=prior_history,
             )
             if proposal:
                 return await _return_sql_proposal(
@@ -800,6 +856,7 @@ async def ask(
                     conversation_id=conversation_id,
                     question=req.question,
                     proposal=proposal,
+                    history=prior_history,
                 )
             response = format_explanation(output=resolution.clarification, title=req.question)
             await _persist_ask_messages(
@@ -852,19 +909,6 @@ async def ask(
                 response=response,
             )
             return AskResponse(conversation_id=conversation_id, sql="", response=response, clarification=message)
-
-        confirm = await _maybe_require_confirmation(req.question, sql, schema, ds.dialect)
-        if confirm:
-            return await _return_sql_proposal(
-                db,
-                ctx=ctx,
-                ds=ds,
-                connector=connector,
-                schema=schema,
-                conversation_id=conversation_id,
-                question=req.question,
-                proposal=confirm,
-            )
 
         try:
             result = await connector.execute_query(sql)
@@ -1098,11 +1142,65 @@ def _build_sql_system_prompt(
         "- Prefer explicit column lists over SELECT * when aggregating or charting.\n"
         "- Honor requested row limits (e.g. top 10 → LIMIT 10).\n"
         "- Use JOINs when relationships are provided.\n"
+        "- For superlative questions ('most', 'top', 'highest', 'best', 'least', 'lowest', 'worst'), "
+        "compute the ranking metric explicitly — GROUP BY the entity, aggregate (COUNT/SUM/AVG) the metric "
+        "across any related tables needed (e.g. 'most rented film' requires counting rental rows per film, "
+        "typically joining film -> inventory -> rental), then ORDER BY the aggregate DESC/ASC and LIMIT "
+        "accordingly. Never answer a superlative question with a plain SELECT * from an unrelated table.\n"
+        "- The conversation history (if any) includes prior questions, the SQL that ran, and the actual "
+        "result rows/values returned. When the user refers back to an entity from a previous turn "
+        "('this film', 'that customer', 'it', 'those orders'), resolve it to the SPECIFIC value(s) already "
+        "shown in the prior result (by exact name/id) and filter directly on it (e.g. WHERE title = "
+        "'<exact title from history>') — do NOT recompute a ranking or pick a new/different entity.\n"
         f"{chart_date_sql_rules(dialect, question)}\n\n"
         "Schema:\n" + ("\n".join(table_lines) or "- table: unknown") + "\n\n"
         "Relationships:\n" + ("\n".join(rel_lines) or "- none") + "\n\n"
         "Glossary:\n" + ("\n".join(glossary_lines) or "- none")
     )
+
+
+async def _maybe_answer_from_context(
+    *,
+    question: str,
+    history: list[LLMMessage],
+    schema: SchemaMetadata,
+) -> str | None:
+    """Answer a follow-up directly from the conversation so far when no new query is needed.
+
+    Not every message needs a fresh SQL round-trip — e.g. "what did you mean by that", "explain
+    the previous result", or "what tables can I ask about" can be answered from history/schema
+    alone. Returns None (falls through to the SQL pipeline) whenever there's no history, no LLM
+    available, or the question needs data that hasn't already been returned.
+    """
+    if not history:
+        return None
+    table_names = ", ".join(t.name for t in schema.tables[:30]) or "none"
+    system = (
+        "You decide whether a user's follow-up message can be answered directly from the "
+        "conversation history below (which includes prior questions, the SQL that ran, and the "
+        "actual results returned), or whether it requires running a NEW SQL query.\n"
+        "Answer directly ONLY when the user is asking you to repeat, summarize, explain, interpret, "
+        "or compare something already present in a previous result, or is asking a meta question "
+        "about what data/tables are available. Do NOT answer directly if they want different rows, "
+        "columns, filters, entities, or any value not already shown above — in that case a new query "
+        "is required, even if it references something from before (e.g. 'the cast of that film' still "
+        "needs a new query, but should reuse the specific film name/id already established above).\n"
+        f"Known tables: {table_names}\n"
+        'Respond ONLY with JSON: {"answer": "<direct answer using only what is already in history>"} '
+        'if you can answer directly, or {"answer": null} if a new query is needed.'
+    )
+    messages = [*history, LLMMessage(role="user", content=question)]
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system, messages=messages)
+        payload = _parse_json_object(raw)
+        if payload:
+            answer = payload.get("answer")
+            if answer:
+                return str(answer).strip()
+    except Exception:  # noqa: BLE001 - no LLM available, always fall back to the SQL pipeline
+        pass
+    return None
 
 
 _AFFIRMATIVE = re.compile(
@@ -1122,6 +1220,96 @@ def _is_affirmative(text: str) -> bool:
 
 def _is_negative(text: str) -> bool:
     return bool(_NEGATIVE.match(text.strip()))
+
+
+# Pure conversational messages that never need a SQL round-trip. Kept disjoint from
+# _AFFIRMATIVE/_NEGATIVE (e.g. no "ok"/"sure"/"great") so confirming or rejecting a
+# pending SQL proposal is never accidentally swallowed as small talk.
+_SMALLTALK_PATTERNS: dict[str, re.Pattern[str]] = {
+    "thanks": re.compile(
+        r"^(?:thanks|thank you|thank u|thx|ty|many thanks|thanks a lot|thanks so much|"
+        r"thanks a bunch|much appreciated|appreciate it|appreciated|cheers)[!.]*$",
+        re.IGNORECASE,
+    ),
+    "greeting": re.compile(
+        r"^(?:hi|hello|hey|hiya|yo|good morning|good afternoon|good evening)[!.]*$",
+        re.IGNORECASE,
+    ),
+    "farewell": re.compile(
+        r"^(?:bye|goodbye|bye bye|see ya|see you|later|take care|talk soon)[!.]*$",
+        re.IGNORECASE,
+    ),
+    "acknowledge": re.compile(
+        r"^(?:cool|nice|great|awesome|perfect|sweet|got it|nice one|well done|nicely done|"
+        r"lol|haha|no worries|np|you're welcome|youre welcome)[!.]*$",
+        re.IGNORECASE,
+    ),
+}
+_SMALLTALK_REPLIES: dict[str, str] = {
+    "thanks": "You're welcome! Let me know if you'd like to dig into anything else.",
+    "greeting": "Hi! Ask me anything about your data — I'll turn it into a query and show you the results.",
+    "farewell": "Goodbye! Come back anytime you have more questions about your data.",
+    "acknowledge": "Glad that helped! Let me know if there's anything else you'd like to explore.",
+}
+
+
+def _smalltalk_reply(question: str) -> str | None:
+    """Return a canned reply for pure chit-chat (thanks/greetings/etc.), or None otherwise.
+
+    Used both as the text source for a "smalltalk" classification and as the offline
+    fallback classifier itself when no LLM is configured.
+    """
+    text = question.strip()
+    for kind, pattern in _SMALLTALK_PATTERNS.items():
+        if pattern.match(text):
+            return _SMALLTALK_REPLIES[kind]
+    return None
+
+
+_MESSAGE_INTENTS = {"confirm", "reject", "smalltalk", "data_question"}
+
+
+async def _classify_message_intent(question: str, *, has_pending_proposal: bool) -> str:
+    """Classify what the user's message wants: confirm/reject a pending query, pure
+    chit-chat, or a real data question.
+
+    A lightweight LLM call handles this by default — it generalizes far better than fixed
+    phrase lists (typos, other phrasings, "yeah that's the one", "nah try again", etc.).
+    The regex lists (_AFFIRMATIVE/_NEGATIVE/_SMALLTALK_PATTERNS) only kick in as a fallback
+    when no LLM is configured, so the app still behaves sensibly offline/in dev — the same
+    "LLM primary, heuristic fallback" pattern used for SQL generation elsewhere in this file.
+    """
+    system = (
+        "Classify the user's latest chat message into exactly one intent:\n"
+        '- "confirm": agreeing to run a SQL query that was just proposed to them '
+        "(e.g. 'yes', 'go ahead', 'looks right', 'yeah that's the one').\n"
+        '- "reject": declining a just-proposed query because it is wrong '
+        "(e.g. 'no', 'that's not it', 'try again').\n"
+        '- "smalltalk": pure conversational filler with no data request at all — greetings, '
+        "thanks, farewells, or acknowledgements ('thanks!', 'hi', 'bye', 'cool, nice one').\n"
+        '- "data_question": anything asking about, requesting, or following up on actual data. '
+        "Use this whenever in doubt.\n"
+        f"There {'IS' if has_pending_proposal else 'is NOT'} a SQL query currently awaiting the "
+        "user's confirmation, so only classify as confirm/reject when that's true.\n"
+        'Respond ONLY with JSON: {"intent": "confirm" | "reject" | "smalltalk" | "data_question"}'
+    )
+    try:
+        llm = LLMProviderFactory.create("openai")
+        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=question)])
+        payload = _parse_json_object(raw)
+        intent = str((payload or {}).get("intent", "")).strip().lower()
+        if intent in _MESSAGE_INTENTS:
+            return intent
+    except Exception:  # noqa: BLE001 - no LLM available, fall back to fast regex heuristics
+        pass
+
+    if _is_affirmative(question):
+        return "confirm"
+    if _is_negative(question):
+        return "reject"
+    if _smalltalk_reply(question) is not None:
+        return "smalltalk"
+    return "data_question"
 
 
 async def _get_pending_proposal(
@@ -1170,10 +1358,13 @@ async def _validate_sql_ready(
 
 
 def _proposal_message(proposal: SqlProposal) -> str:
-    return (
+    message = (
         f"I think you're asking for: {proposal.interpretation}\n\n"
         "Does that look right? Reply yes to run the query, or no to rephrase."
     )
+    if proposal.suggested_rephrase:
+        message += f'\n\nTip: for a more precise answer, try asking: "{proposal.suggested_rephrase}"'
+    return message
 
 
 async def _return_sql_proposal(
@@ -1186,6 +1377,7 @@ async def _return_sql_proposal(
     conversation_id: uuid.UUID,
     question: str,
     proposal: SqlProposal,
+    history: list[LLMMessage] | None = None,
 ) -> AskResponse:
     proposal.original_question = proposal.original_question or question
     err = await _validate_sql_ready(proposal.sql, schema, connector)
@@ -1197,6 +1389,7 @@ async def _return_sql_proposal(
             connector=connector,
             context=err,
             draft_sql=proposal.sql,
+            history=history,
         )
         if rebuilt:
             proposal = rebuilt
@@ -1223,6 +1416,8 @@ async def _return_sql_proposal(
     response.data["interpretation"] = proposal.interpretation
     response.data["proposed_sql"] = proposal.sql
     response.data["awaiting_confirmation"] = True
+    if proposal.suggested_rephrase:
+        response.data["suggested_rephrase"] = proposal.suggested_rephrase
 
     await _persist_ask_messages(
         db,
@@ -1314,6 +1509,7 @@ async def _build_sql_proposal(
     connector: IDBConnector,
     context: str = "",
     draft_sql: str = "",
+    history: list[LLMMessage] | None = None,
 ) -> SqlProposal | None:
     schema_lines = []
     for table in schema.tables:
@@ -1324,9 +1520,16 @@ async def _build_sql_proposal(
         f"You are a {dialect} analyst. Given a user question and schema metadata, infer the most likely intent "
         "and write ONE read-only SELECT using ONLY listed tables and columns. "
         "Map business terms to the closest schema columns (e.g. cost/revenue → amount). "
+        "For superlative questions ('most', 'top', 'highest', 'least'), aggregate and JOIN across related "
+        "tables as needed, then ORDER BY the aggregate and LIMIT — never fall back to an unrelated SELECT *. "
+        "The user's prior conversation turns (if any) are included as message history before the final "
+        "question — use them to resolve references like 'this film' / 'that customer' to concrete values "
+        "(e.g. from a 'Result: ...' line in a prior assistant turn), and prefer a fresh, well-scoped query "
+        "over repeating an earlier one when the current question asks for different columns or detail.\n"
         f"{chart_date_sql_rules(dialect, question)} "
         "Respond ONLY with JSON (no markdown): "
-        '{"interpretation": "plain English summary of what you will query", "sql": "SELECT ..."}'
+        '{"interpretation": "plain English summary of what you will query", "sql": "SELECT ...", '
+        '"suggested_rephrase": "an example of a more precise way to ask this" or null}'
     )
     user = (
         f"User question: {question}\n"
@@ -1334,10 +1537,11 @@ async def _build_sql_proposal(
         + (f"Context: {context}\n" if context else "")
         + (f"Draft SQL (fix if needed): {draft_sql}\n" if draft_sql else "")
     )
+    messages = [*(history or []), LLMMessage(role="user", content=user)]
 
     try:
         llm = LLMProviderFactory.create("openai")
-        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
+        raw = await llm.complete(system=system, messages=messages)
         proposal = _parse_proposal_json(raw, original_question=question)
         if proposal and await _validate_sql_ready(proposal.sql, schema, connector) is None:
             return proposal
@@ -1373,100 +1577,14 @@ def _parse_proposal_json(raw: str, *, original_question: str) -> SqlProposal | N
 
     interpretation = str(payload.get("interpretation", "")).strip()
     sql = _extract_sql(str(payload.get("sql", "")))
+    rephrase = payload.get("suggested_rephrase")
+    rephrase = str(rephrase).strip() if rephrase else ""
     if interpretation and sql:
-        return SqlProposal(interpretation=interpretation, sql=sql, original_question=original_question)
-    return None
-
-
-async def _maybe_require_confirmation(
-    question: str,
-    sql: str,
-    schema: SchemaMetadata,
-    dialect: str,
-) -> SqlProposal | None:
-    """Ask for confirmation when the question uses terms that don't literally match schema columns."""
-    schema_terms = {t.name.lower() for t in schema.tables}
-    schema_terms.update(c.name.lower() for t in schema.tables for c in t.columns)
-    question_tokens = {tok.lower() for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", question)}
-    fuzzy_terms = question_tokens - schema_terms - {
-        "show",
-        "the",
-        "a",
-        "an",
-        "as",
-        "by",
-        "for",
-        "from",
-        "in",
-        "on",
-        "to",
-        "and",
-        "or",
-        "all",
-        "top",
-        "month",
-        "monthly",
-        "week",
-        "daily",
-        "line",
-        "bar",
-        "chart",
-        "graph",
-        "plot",
-        "trend",
-        "list",
-        "count",
-        "sum",
-        "average",
-        "total",
-        "data",
-        "table",
-        "rows",
-        "me",
-        "my",
-        "what",
-        "how",
-        "many",
-        "each",
-        "per",
-        "over",
-        "time",
-    }
-    if not fuzzy_terms:
-        return None
-
-    schema_lines = []
-    for table in schema.tables:
-        cols = ", ".join(c.name for c in table.columns)
-        schema_lines.append(f"{table.name}: {cols}")
-    system = (
-        f"You decide if a {dialect} query should be confirmed with the user before running. "
-        "If the question uses business terms that were mapped to schema columns, confirmation is needed. "
-        "Respond ONLY with JSON: "
-        '{"needs_confirmation": true/false, "interpretation": "what the query will return"}'
-    )
-    user = (
-        f"Question: {question}\n"
-        f"Ambiguous terms: {', '.join(sorted(fuzzy_terms))}\n"
-        f"Schema:\n" + "\n".join(schema_lines) + f"\nSQL:\n{sql}"
-    )
-    try:
-        llm = LLMProviderFactory.create("openai")
-        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
-        payload = _parse_json_object(raw)
-        if payload and payload.get("needs_confirmation"):
-            interpretation = str(payload.get("interpretation", "")).strip()
-            if interpretation:
-                return SqlProposal(interpretation=interpretation, sql=sql, original_question=question)
-    except Exception:  # noqa: BLE001
-        pass
-
-    if fuzzy_terms:
-        mapped = ", ".join(sorted(fuzzy_terms))
         return SqlProposal(
-            interpretation=f"Answer your question using available schema columns (mapped from: {mapped})",
+            interpretation=interpretation,
             sql=sql,
-            original_question=question,
+            original_question=original_question,
+            suggested_rephrase=rephrase,
         )
     return None
 
@@ -1502,14 +1620,14 @@ async def _resolve_sql_or_clarify(
     prior_messages: list[LLMMessage] | None = None,
     max_retries: int = _MAX_SQL_RETRIES,
 ) -> SqlResolution:
-    """Generate SQL, verify against schema metadata, validate with EXPLAIN, or ask the user."""
+    """Generate SQL, score confidence, and either run it, propose it, or ask the user."""
     messages = list(prior_messages or [])
     messages.append(LLMMessage(role="user", content=question))
     last_error = ""
     last_sql = ""
 
     for attempt in range(max_retries):
-        raw = await _complete_sql_llm_raw(system_prompt, messages)
+        raw, used_llm = await _complete_sql_llm_raw(system_prompt, messages)
         sql, clarify = _parse_llm_sql_response(raw)
         if clarify:
             proposal = await _build_sql_proposal(
@@ -1519,6 +1637,7 @@ async def _resolve_sql_or_clarify(
                 connector=connector,
                 context=clarify,
                 draft_sql=last_sql,
+                history=prior_messages,
             )
             if proposal:
                 return SqlResolution(proposal=proposal)
@@ -1546,29 +1665,39 @@ async def _resolve_sql_or_clarify(
             messages.extend(_retry_messages(sql, f"Schema check failed: {last_error}"))
             continue
 
-        verified = await _verify_sql_with_llm(
+        judged = await _judge_sql(
             dialect=dialect,
             schema=schema,
             question=question,
             sql=sql,
+            llm_generated=used_llm,
+            history=prior_messages,
         )
-        if verified.proposal:
-            return verified
-        if verified.clarification:
-            proposal = await _build_sql_proposal(
-                dialect=dialect,
-                schema=schema,
-                question=question,
-                connector=connector,
-                context=verified.clarification,
-                draft_sql=sql,
-            )
-            if proposal:
-                return SqlResolution(proposal=proposal)
-            return verified
-        if verified.sql:
-            sql = verified.sql
+        if judged.sql and judged.sql != sql:
+            fix_guard = check_readonly_select(judged.sql)
+            fix_schema_check = validate_sql_against_schema(judged.sql, schema)
+            if fix_guard.ok and fix_schema_check.ok:
+                sql = judged.sql
 
+        if judged.confidence < _CONFIDENCE_CLARIFY:
+            clar_text = judged.clarifying_question or (
+                f"I'm not confident I understood \"{question}\" correctly against the current schema."
+            )
+            if judged.suggested_rephrase:
+                clar_text += f'\n\nTip: try asking, for example: "{judged.suggested_rephrase}"'
+            return SqlResolution(clarification=clar_text)
+
+        if judged.confidence < _CONFIDENCE_AUTO_RUN:
+            return SqlResolution(
+                proposal=SqlProposal(
+                    interpretation=judged.interpretation or f"Run a query to answer: {question}",
+                    sql=sql,
+                    original_question=question,
+                    suggested_rephrase=judged.suggested_rephrase or "",
+                )
+            )
+
+        # High confidence: validate against the live database and execute directly.
         validation = await connector.validate_sql(sql)
         if validation.ok:
             return SqlResolution(sql=sql)
@@ -1586,6 +1715,7 @@ async def _resolve_sql_or_clarify(
         connector=connector,
         context=last_error,
         draft_sql=last_sql,
+        history=prior_messages,
     )
     if proposal:
         return SqlResolution(proposal=proposal)
@@ -1606,78 +1736,125 @@ def _retry_messages(sql: str, error: str) -> list[LLMMessage]:
     ]
 
 
-async def _verify_sql_with_llm(
+async def _judge_sql(
     *,
     dialect: str,
     schema: SchemaMetadata,
     question: str,
     sql: str,
-) -> SqlResolution:
-    """LLM pass to verify SQL matches schema metadata before execution."""
+    llm_generated: bool,
+    history: list[LLMMessage] | None = None,
+) -> SqlJudgement:
+    """Score confidence that ``sql`` correctly answers ``question`` before it runs.
+
+    When the SQL came from the heuristic (no-LLM) fallback, confidence is always low
+    since that path cannot reliably reason about joins/aggregations — the caller
+    should ask the user to confirm or clarify rather than execute it.
+    """
+    if not llm_generated:
+        return _heuristic_judgement(question, schema, sql)
+
     schema_lines = []
     for table in schema.tables:
         cols = ", ".join(f"{c.name} ({c.data_type})" for c in table.columns)
         schema_lines.append(f"{table.name}: {cols}")
 
     system = (
-        f"You verify {dialect} SQL against the schema before it runs. "
+        f"You are a careful {dialect} data analyst reviewing a generated SQL query before it runs. "
+        "Score how confident you are that this query correctly answers the user's question using ONLY the "
+        "schema below — consider whether it uses the right tables/joins/aggregation for the intent (e.g. "
+        "'most rented film' needs a COUNT of rentals per film via inventory, ORDER BY DESC, LIMIT), and "
+        "whether it matches the requested grain and filters. If the question references something from "
+        "earlier in the conversation (e.g. 'this film', 'that customer'), check the prior turns (including "
+        "any 'Result: ...' lines) to confirm the query is scoped to the SAME specific entity — lower "
+        "confidence if it isn't.\n"
         "Respond ONLY with JSON (no markdown): "
-        '{"action":"run","sql":"..."} if the query is correct (you may fix minor issues), '
-        '"action":"fix","sql":"..."} if it must be corrected to use only schema objects, '
-        '"action":"propose","interpretation":"...","sql":"..."} if the user should confirm your interpretation, '
-        'or {"action":"clarify","message":"..."} if the user must provide missing detail}.'
+        '{"confidence": 0.0-1.0, "sql": "the query, corrected if needed", '
+        '"interpretation": "plain-English summary of what this query returns", '
+        '"clarifying_question": "question to ask the user" or null, '
+        '"suggested_rephrase": "an example of how the user could phrase this more precisely" or null}\n'
+        "Use confidence below 0.4 with a clarifying_question when the question is ambiguous or the query is "
+        "unlikely to be correct. Use confidence 0.4-0.75 when the query is a reasonable guess that should be "
+        "confirmed. Use confidence above 0.75 only when you are confident the query is correct as-is. "
+        "Always set suggested_rephrase when a more specific phrasing would meaningfully improve accuracy."
     )
     user = (
         f"User question: {question}\n\n"
         f"Schema:\n" + "\n".join(schema_lines) + "\n\n"
-        f"Proposed SQL:\n{sql}"
+        f"Generated SQL:\n{sql}"
     )
+    messages = [*(history or []), LLMMessage(role="user", content=user)]
 
     try:
         llm = LLMProviderFactory.create("openai")
-        raw = await llm.complete(system=system, messages=[LLMMessage(role="user", content=user)])
-        parsed = _parse_verify_json(raw)
+        raw = await llm.complete(system=system, messages=messages)
+        parsed = _parse_judgement_json(raw)
         if parsed is not None:
             return parsed
-    except Exception:  # noqa: BLE001 - fall back to static schema check
+    except Exception:  # noqa: BLE001 - trust the generation if judging is unavailable
         pass
 
-    return SqlResolution(sql=sql)
+    return SqlJudgement(sql=sql, confidence=1.0, interpretation=f"Run a query to answer: {question}")
 
 
-def _parse_verify_json(raw: str) -> SqlResolution | None:
-    text = raw.strip()
-    if text.startswith("```"):
-        parts = text.split("```")
-        if len(parts) >= 2:
-            text = parts[1]
-            if text.lstrip().lower().startswith("json"):
-                text = text.lstrip()[4:]
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            return None
-        try:
-            payload = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return None
+def _heuristic_judgement(question: str, schema: SchemaMetadata, sql: str) -> SqlJudgement:
+    tables = ", ".join(t.name for t in schema.tables[:8]) or "none"
+    clarifying = (
+        "I don't have an LLM connected right now, so I can only do simple keyword matching and I'm not "
+        f'confident that answers "{question}" correctly. '
+        f"Available tables: {tables}. Could you name the exact table, metric, and any filters you want?"
+    )
+    return SqlJudgement(
+        sql=sql,
+        confidence=0.15,
+        interpretation=f"Best-effort keyword match against: {tables}",
+        clarifying_question=clarifying,
+        suggested_rephrase=_example_rephrase(schema),
+    )
 
-    action = str(payload.get("action", "")).lower()
-    if action == "clarify":
-        message = str(payload.get("message", "")).strip()
-        return SqlResolution(clarification=message) if message else None
-    if action == "propose":
-        interpretation = str(payload.get("interpretation", "")).strip()
-        sql = _extract_sql(str(payload.get("sql", "")))
-        if interpretation and sql:
-            return SqlResolution(proposal=SqlProposal(interpretation=interpretation, sql=sql))
-        return None
-    if action in {"run", "fix"}:
-        sql = _extract_sql(str(payload.get("sql", "")))
-        return SqlResolution(sql=sql) if sql else None
+
+def _example_rephrase(schema: SchemaMetadata) -> str | None:
+    for table in schema.tables:
+        numeric = next(
+            (
+                c.name
+                for c in table.columns
+                if any(hint in c.data_type.lower() for hint in ("int", "numeric", "decimal", "float", "double"))
+                and not c.is_primary_key
+            ),
+            None,
+        )
+        if numeric:
+            return f"Show total {numeric} by {table.name}"
+    if schema.tables:
+        return f"Show the top 10 rows from {schema.tables[0].name}"
     return None
+
+
+def _parse_judgement_json(raw: str) -> SqlJudgement | None:
+    payload = _parse_json_object(raw)
+    if payload is None:
+        return None
+    try:
+        confidence = float(payload.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    sql = _extract_sql(str(payload.get("sql", "") or "")) or None
+    interpretation = str(payload.get("interpretation", "") or "").strip()
+    clarifying_question = payload.get("clarifying_question")
+    clarifying_question = str(clarifying_question).strip() if clarifying_question else None
+    suggested_rephrase = payload.get("suggested_rephrase")
+    suggested_rephrase = str(suggested_rephrase).strip() if suggested_rephrase else None
+
+    return SqlJudgement(
+        sql=sql,
+        confidence=confidence,
+        interpretation=interpretation,
+        clarifying_question=clarifying_question or None,
+        suggested_rephrase=suggested_rephrase or None,
+    )
 
 
 async def _failure_clarification(question: str, schema: SchemaMetadata, error: str) -> str:
@@ -1739,15 +1916,18 @@ async def _generate_sql_with_retries(
     return resolution.sql or "", "could not generate valid read-only SQL"
 
 
-async def _complete_sql_llm_raw(system_prompt: str, messages: list[LLMMessage]) -> str:
-    """Call OpenAI for NL→SQL; fall back to heuristic when LLM is unavailable."""
+async def _complete_sql_llm_raw(system_prompt: str, messages: list[LLMMessage]) -> tuple[str, bool]:
+    """Call OpenAI for NL→SQL; fall back to heuristic when LLM is unavailable.
+
+    Returns ``(text, used_llm)`` so callers can treat heuristic output as low-confidence.
+    """
     try:
         llm = LLMProviderFactory.create("openai")
-        return await llm.complete(system=system_prompt, messages=messages)
+        return await llm.complete(system=system_prompt, messages=messages), True
     except Exception:  # noqa: BLE001
         pass
     llm = LLMProviderFactory.create("heuristic")
-    return await llm.complete(system=system_prompt, messages=messages)
+    return await llm.complete(system=system_prompt, messages=messages), False
 
 
 def _parse_llm_sql_response(raw: str) -> tuple[str | None, str | None]:
@@ -1763,7 +1943,7 @@ def _parse_llm_sql_response(raw: str) -> tuple[str | None, str | None]:
 
 
 async def _complete_sql_llm(system_prompt: str, messages: list[LLMMessage]) -> str:
-    raw = await _complete_sql_llm_raw(system_prompt, messages)
+    raw, _used_llm = await _complete_sql_llm_raw(system_prompt, messages)
     sql, _clarify = _parse_llm_sql_response(raw)
     if sql:
         return sql
