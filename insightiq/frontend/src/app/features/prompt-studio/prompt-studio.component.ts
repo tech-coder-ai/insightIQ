@@ -5,6 +5,7 @@ import { HttpClient } from '@angular/common/http';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { API_BASE } from '../../core/api.config';
+import { ConfirmService } from '../../core/confirm.service';
 import { DashboardService } from '../../core/dashboard.service';
 import {
   PromptBindings,
@@ -14,6 +15,8 @@ import {
   PromptTemplateDetail,
   PromptVersion,
 } from '../../core/prompt-studio.service';
+import { ToastService } from '../../core/toast.service';
+import { IconComponent } from '../../shared/icon.component';
 import { ResponseRendererComponent } from '../../shared/response-renderer.component';
 
 type DataSourceOption = { id: string; name: string; db_type: string };
@@ -22,7 +25,7 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, ResponseRendererComponent, SlicePipe, RouterLink],
+  imports: [ReactiveFormsModule, ResponseRendererComponent, SlicePipe, RouterLink, IconComponent],
   template: `
     <div class="page">
       <header>
@@ -277,7 +280,7 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
                       aria-label="Delete run"
                       (click)="deleteRun(r, $event)"
                     >
-                      ✕
+                      <app-icon name="close" [size]="11" />
                     </button>
                   </div>
                 }
@@ -404,6 +407,16 @@ type DocumentOption = { id: string; filename: string; has_content: boolean };
       .run-item pre { margin: 0; white-space: pre-wrap; font-size: var(--text-xs); font-family: var(--font-mono); flex: 1; }
       pre { white-space: pre-wrap; font-size: var(--text-xs); font-family: var(--font-mono); }
       details summary { cursor: pointer; color: var(--text-2); font-size: var(--text-sm); margin-top: 8px; }
+
+      @media (max-width: 960px) {
+        .layout { grid-template-columns: 1fr; }
+        aside { order: 2; }
+        main { order: 1; }
+      }
+      @media (max-width: 640px) {
+        aside, main { padding: var(--space-4); }
+        .head-row { flex-direction: column; }
+      }
     `,
   ],
 })
@@ -413,6 +426,8 @@ export class PromptStudioComponent implements OnInit {
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
   private readonly route = inject(ActivatedRoute);
+  private readonly confirmDialog = inject(ConfirmService);
+  private readonly toast = inject(ToastService);
 
   templates: PromptTemplate[] = [];
   selected: PromptTemplate | null = null;
@@ -579,9 +594,9 @@ export class PromptStudioComponent implements OnInit {
     this.http.post(`${API_BASE}/talk-to-docs/collections/${collectionId}/upload`, body).subscribe({
       next: () => {
         window.setTimeout(() => this.loadDocuments(), 2500);
-        alert('File uploaded. Wait for processing, then pick it from the list.');
+        this.toast.success('File uploaded. Wait for processing, then pick it from the list.');
       },
-      error: () => alert('Upload failed'),
+      error: () => this.toast.error('Upload failed'),
     });
     input.value = '';
   }
@@ -697,7 +712,7 @@ export class PromptStudioComponent implements OnInit {
       },
       error: (err: { error?: { detail?: string } }) => {
         this.running.set(false);
-        alert(err?.error?.detail ?? 'Prompt run failed');
+        this.toast.error(err?.error?.detail ?? 'Prompt run failed');
       },
     });
   }
@@ -706,9 +721,14 @@ export class PromptStudioComponent implements OnInit {
     this.lastRun = r;
   }
 
-  deleteRun(r: PromptRun, event?: Event): void {
+  async deleteRun(r: PromptRun, event?: Event): Promise<void> {
     event?.stopPropagation();
-    if (!confirm('Delete this run from history?')) return;
+    const ok = await this.confirmDialog.ask({
+      title: 'Delete this run from history?',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     this.promptService.deleteRun(r.run_id).subscribe({
       next: () => {
         this.runs = this.runs.filter((x) => x.run_id !== r.run_id);
@@ -716,19 +736,25 @@ export class PromptStudioComponent implements OnInit {
           this.lastRun = this.runs[0] ?? null;
         }
       },
-      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Could not delete run'),
+      error: (err: { error?: { detail?: string } }) => this.toast.error(err?.error?.detail ?? 'Could not delete run'),
     });
   }
 
-  clearAllRuns(): void {
+  async clearAllRuns(): Promise<void> {
     if (!this.selectedDetail) return;
-    if (!confirm('Delete all run history for this template?')) return;
+    const ok = await this.confirmDialog.ask({
+      title: 'Delete all run history for this template?',
+      message: 'This cannot be undone.',
+      confirmLabel: 'Delete all',
+      danger: true,
+    });
+    if (!ok) return;
     this.promptService.deleteAllRuns(this.selectedDetail.id).subscribe({
       next: () => {
         this.runs = [];
         this.lastRun = null;
       },
-      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Could not clear run history'),
+      error: (err: { error?: { detail?: string } }) => this.toast.error(err?.error?.detail ?? 'Could not clear run history'),
     });
   }
 
@@ -739,14 +765,14 @@ export class PromptStudioComponent implements OnInit {
         this.selectedDetail = { ...this.selectedDetail!, is_shared: t.is_shared };
         this.templates = this.templates.map((x) => (x.id === t.id ? { ...x, is_shared: t.is_shared } : x));
       },
-      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Could not update sharing'),
+      error: (err: { error?: { detail?: string } }) => this.toast.error(err?.error?.detail ?? 'Could not update sharing'),
     });
   }
 
   pinToDashboard(dashboardId: string): void {
     if (!this.lastRun || !dashboardId) return;
     this.promptService.pinRun(this.lastRun.run_id, dashboardId, this.selectedDetail?.name).subscribe({
-      next: () => alert('Pinned to dashboard'),
+      next: () => this.toast.success('Pinned to dashboard'),
     });
   }
 }

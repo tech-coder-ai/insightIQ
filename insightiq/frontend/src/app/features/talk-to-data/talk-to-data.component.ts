@@ -1,10 +1,13 @@
 import { HttpClient } from '@angular/common/http';
-import { Component, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, HostListener, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { DashboardService, Dashboard } from '../../core/dashboard.service';
 import { API_BASE } from '../../core/api.config';
+import { ConfirmService } from '../../core/confirm.service';
+import { ToastService } from '../../core/toast.service';
+import { IconComponent } from '../../shared/icon.component';
 import { ResponseRendererComponent } from '../../shared/response-renderer.component';
 import { SchemaTreeComponent } from '../../shared/schema-tree.component';
 import { PromptPickerComponent } from '../../shared/prompt-picker.component';
@@ -52,7 +55,7 @@ type ChatMessageDto = {
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, FormsModule, ResponseRendererComponent, SchemaTreeComponent, PromptPickerComponent, RouterLink],
+  imports: [ReactiveFormsModule, FormsModule, ResponseRendererComponent, SchemaTreeComponent, PromptPickerComponent, RouterLink, IconComponent],
   template: `
     <div class="page page-chat">
       <div class="page-header">
@@ -81,10 +84,10 @@ type ChatMessageDto = {
             <div class="panel-section">
               <div class="panel-label">Datasource</div>
               <div class="source-row">
-                <select [value]="selectedSourceId()" (change)="onSourceChange($any($event.target).value)">
-                  <option value="">Select a datasource…</option>
+                <select [ngModel]="selectedSourceId()" (ngModelChange)="onSourceChange($event)" name="datasource">
+                  <option [ngValue]="''">Select a datasource…</option>
                   @for (ds of sources(); track ds.id) {
-                    <option [value]="ds.id">{{ ds.name }}</option>
+                    <option [ngValue]="ds.id">{{ ds.name }}</option>
                   }
                 </select>
                 @if (selectedSourceId()) {
@@ -127,13 +130,15 @@ type ChatMessageDto = {
                             (keydown.enter)="saveRename(cv)" (keydown.escape)="renamingId.set(null)" (blur)="saveRename(cv)" />
                         } @else {
                           <button class="conv-main" (click)="openConversation(cv)">
-                            @if (cv.starred) { <span class="conv-star">★</span> }
+                            @if (cv.starred) { <span class="conv-star"><app-icon name="star-filled" [size]="12" /></span> }
                             <span class="conv-title">{{ cv.title }}</span>
                           </button>
                           <div class="conv-actions">
-                            <button class="icon-btn xs" [title]="cv.starred ? 'Unstar' : 'Star'" (click)="toggleStar(cv, $event)">{{ cv.starred ? '★' : '☆' }}</button>
-                            <button class="icon-btn xs" title="Rename" (click)="startRename(cv, $event)">✎</button>
-                            <button class="icon-btn xs danger" title="Delete" (click)="deleteConversation(cv, $event)">✕</button>
+                            <button class="icon-btn xs" [attr.aria-label]="cv.starred ? 'Unstar' : 'Star'" [title]="cv.starred ? 'Unstar' : 'Star'" (click)="toggleStar(cv, $event)">
+                              <app-icon [name]="cv.starred ? 'star-filled' : 'star-outline'" [size]="12" />
+                            </button>
+                            <button class="icon-btn xs" title="Rename" aria-label="Rename" (click)="startRename(cv, $event)"><app-icon name="edit" [size]="12" /></button>
+                            <button class="icon-btn xs danger" title="Delete" aria-label="Delete" (click)="deleteConversation(cv, $event)"><app-icon name="trash" [size]="12" /></button>
                           </div>
                         }
                       </div>
@@ -170,7 +175,7 @@ type ChatMessageDto = {
                   </div>
                 </div>
               } @else {
-              <div class="chat-messages" #messagesPane>
+              <div class="chat-messages" #messagesPane role="log" aria-live="polite" aria-label="Conversation messages">
                 @for (msg of messages(); track $index) {
                   @if (msg.role === 'user') {
                     <div class="msg-row user">
@@ -180,8 +185,8 @@ type ChatMessageDto = {
                             <div class="edit-box">
                               <textarea [(ngModel)]="editDraft" rows="2" (keydown.enter)="$event.preventDefault(); saveEdit($index)"></textarea>
                               <div class="edit-actions">
-                                <button class="btn-ghost sm" (click)="cancelEdit()">Cancel</button>
-                                <button class="btn-primary sm" (click)="saveEdit($index)">Save &amp; resend</button>
+                                <button class="btn btn-ghost btn-sm" (click)="cancelEdit()">Cancel</button>
+                                <button class="btn btn-primary btn-sm" (click)="saveEdit($index)">Save &amp; resend</button>
                               </div>
                             </div>
                           </div>
@@ -189,9 +194,9 @@ type ChatMessageDto = {
                           <div class="msg-body">
                             <div class="msg-bubble user">{{ msg.question }}</div>
                             <div class="msg-actions">
-                              <button class="msg-icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')">✎ Edit</button>
+                              <button class="msg-icon-btn" title="Edit" (click)="startEdit($index, msg.question || '')"><app-icon name="edit" [size]="12" /> Edit</button>
                               <button class="msg-icon-btn" title="Copy" (click)="copy(msg.question || '', 'u' + $index)">
-                                {{ copied() === 'u' + $index ? '✓ Copied' : '⧉ Copy' }}
+                                @if (copied() === 'u' + $index) { <app-icon name="check" [size]="12" /> Copied } @else { <app-icon name="copy" [size]="12" /> Copy }
                               </button>
                             </div>
                           </div>
@@ -222,10 +227,10 @@ type ChatMessageDto = {
                               <app-response-renderer [payload]="msg.response ?? null" />
                               @if (msg.awaitingConfirmation) {
                                 <div class="confirm-actions">
-                                  <button type="button" class="btn-primary sm" (click)="confirmProposal()" [disabled]="loading()">
+                                  <button type="button" class="btn btn-primary btn-sm" (click)="confirmProposal()" [disabled]="loading()">
                                     Yes, run it
                                   </button>
-                                  <button type="button" class="btn-ghost sm" (click)="rejectProposal()" [disabled]="loading()">
+                                  <button type="button" class="btn btn-ghost btn-sm" (click)="rejectProposal()" [disabled]="loading()">
                                     No, rephrase
                                   </button>
                                 </div>
@@ -236,11 +241,11 @@ type ChatMessageDto = {
                             <div class="msg-actions">
                               @if (msg.sql) {
                                 <button class="msg-icon-btn" title="Copy SQL" (click)="copy(msg.sql || '', 's' + $index)">
-                                  {{ copied() === 's' + $index ? '✓ Copied' : '⧉ SQL' }}
+                                  @if (copied() === 's' + $index) { <app-icon name="check" [size]="12" /> Copied } @else { <app-icon name="copy" [size]="12" /> SQL }
                                 </button>
                               }
                               <button class="msg-icon-btn" title="Pin to dashboard" (click)="openPinModal(msg)" [disabled]="pinning()">
-                                📌 Pin
+                                <app-icon name="pin" [size]="12" /> Pin
                               </button>
                             </div>
                           }
@@ -254,8 +259,10 @@ type ChatMessageDto = {
                   <div class="msg-row assistant">
                     <div class="msg-row-inner">
                       <div class="msg-avatar bot" aria-hidden="true">IQ</div>
-                      <div class="msg-bubble assistant thinking">
-                        <span class="typing"><span></span><span></span><span></span></span>
+                      <div class="msg-body">
+                        <div class="msg-bubble assistant thinking">
+                          <span class="typing"><span></span><span></span><span></span></span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -291,14 +298,14 @@ type ChatMessageDto = {
 
     @if (schemaPanelOpen()) {
       <div class="modal-backdrop" (click)="closeSchemaPanel()">
-        <div class="modal schema-modal" (click)="$event.stopPropagation()">
+        <div class="modal schema-modal" role="dialog" aria-modal="true" aria-label="Schema" (click)="$event.stopPropagation()">
           <div class="modal-head">
             <h2>Schema</h2>
             <div class="modal-head-actions">
-              <button type="button" class="btn-ghost tiny" (click)="loadSchema(true)" [disabled]="schemaLoading()">
-                ↻ Refresh
+              <button type="button" class="btn btn-ghost btn-xs" (click)="loadSchema(true)" [disabled]="schemaLoading()">
+                <app-icon name="refresh" [size]="12" /> Refresh
               </button>
-              <button type="button" class="icon-btn" title="Close" (click)="closeSchemaPanel()">✕</button>
+              <button type="button" class="icon-btn" title="Close" aria-label="Close" (click)="closeSchemaPanel()"><app-icon name="close" [size]="14" /></button>
             </div>
           </div>
           @if (selectedSource(); as src) {
@@ -319,10 +326,10 @@ type ChatMessageDto = {
 
     @if (pinModalOpen()) {
       <div class="modal-backdrop" (click)="closePinModal()">
-        <div class="modal" (click)="$event.stopPropagation()">
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Pin to dashboard" (click)="$event.stopPropagation()">
           <div class="modal-head">
             <h2>Pin to dashboard</h2>
-            <button class="icon-btn" (click)="closePinModal()">✕</button>
+            <button class="icon-btn" aria-label="Close" (click)="closePinModal()"><app-icon name="close" [size]="14" /></button>
           </div>
           <p class="modal-sub">{{ pinMsg()?.question ?? 'Query result' }}</p>
 
@@ -356,8 +363,8 @@ type ChatMessageDto = {
               <input [(ngModel)]="pinNewDashboardName" placeholder="My Dashboard" />
             </label>
             <div class="modal-actions">
-              <button class="btn-ghost" (click)="closePinModal()">Cancel</button>
-              <button class="btn-primary" (click)="confirmPin()" [disabled]="pinning() || !pinNewDashboardName.trim()">
+              <button class="btn btn-ghost" (click)="closePinModal()">Cancel</button>
+              <button class="btn btn-primary" (click)="confirmPin()" [disabled]="pinning() || !pinNewDashboardName.trim()">
                 {{ pinning() ? 'Working…' : 'Create & pin' }}
               </button>
             </div>
@@ -379,8 +386,8 @@ type ChatMessageDto = {
               <button class="link-btn" type="button" (click)="pinCreateMode.set(true)">+ Create new dashboard instead</button>
             }
             <div class="modal-actions">
-              <button class="btn-ghost" (click)="closePinModal()">Cancel</button>
-              <button class="btn-primary" (click)="confirmPin()" [disabled]="pinning() || !canConfirmPin()">
+              <button class="btn btn-ghost" (click)="closePinModal()">Cancel</button>
+              <button class="btn btn-primary" (click)="confirmPin()" [disabled]="pinning() || !canConfirmPin()">
                 {{ pinning() ? 'Working…' : (pinCreateMode() ? 'Create & pin' : 'Pin to dashboard') }}
               </button>
             </div>
@@ -471,14 +478,6 @@ type ChatMessageDto = {
       color: var(--primary-text); cursor: pointer; font-size: var(--text-sm); font-family: inherit;
     }
     .link-btn:hover { text-decoration: underline; }
-    .icon-btn {
-      display: inline-flex; align-items: center; padding: 3px 8px; border-radius: var(--radius-sm);
-      border: 1px solid var(--border); background: var(--surface-2);
-      color: var(--text-muted); cursor: pointer; font-size: var(--text-xs); font-family: inherit;
-    }
-    .icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
-    .icon-btn.xs { padding: 2px 5px; font-size: 11px; }
-    .icon-btn.xs.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   `],
 })
 export class TalkToDataComponent implements OnInit {
@@ -487,6 +486,8 @@ export class TalkToDataComponent implements OnInit {
   private readonly fb = inject(FormBuilder);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly confirmDialog = inject(ConfirmService);
+  private readonly toast = inject(ToastService);
   private readonly messagesPane = viewChild<ElementRef<HTMLElement>>('messagesPane');
 
   readonly sources = signal<DataSource[]>([]);
@@ -532,15 +533,33 @@ export class TalkToDataComponent implements OnInit {
     'Show schema summary',
   ];
 
-  ngOnInit(): void { this.loadSources(); }
+  ngOnInit(): void {
+    this.loadSources();
+    // Angular reuses this component instance when navigating between routes that
+    // only differ by query params (e.g. clicking "Talk to Data" for a different
+    // datasource while already on this page), so `ngOnInit` won't re-run. React to
+    // queryParamMap changes directly to keep the dropdown in sync.
+    this.route.queryParamMap.subscribe((params) => {
+      const preselect = params.get('source');
+      if (preselect && preselect !== this.selectedSourceId()) {
+        this.applyPreselectedSource(preselect);
+      }
+    });
+  }
+
+  private applyPreselectedSource(id: string): void {
+    if (this.sources().some((d) => d.id === id)) {
+      this.onSourceChange(id);
+    }
+  }
 
   loadSources(): void {
     this.http.get<DataSource[]>(`${API_BASE}/talk-to-data/sources`).subscribe({
       next: (s) => {
         this.sources.set(s);
         const preselect = this.route.snapshot.queryParamMap.get('source');
-        if (preselect && !this.selectedSourceId() && s.some((d) => d.id === preselect)) {
-          this.onSourceChange(preselect);
+        if (preselect && !this.selectedSourceId()) {
+          this.applyPreselectedSource(preselect);
         }
       },
     });
@@ -632,9 +651,15 @@ export class TalkToDataComponent implements OnInit {
     });
   }
 
-  deleteConversation(cv: Conversation, ev: Event): void {
+  async deleteConversation(cv: Conversation, ev: Event): Promise<void> {
     ev.stopPropagation();
-    if (!confirm(`Delete conversation "${cv.title}"? This cannot be undone.`)) return;
+    const ok = await this.confirmDialog.ask({
+      title: `Delete conversation "${cv.title}"?`,
+      message: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     this.http.delete(`${API_BASE}/chat/conversations/${cv.id}`).subscribe({
       next: () => {
         if (this.activeConversationId() === cv.id) this.newChat();
@@ -671,6 +696,12 @@ export class TalkToDataComponent implements OnInit {
 
   closeSchemaPanel(): void {
     this.schemaPanelOpen.set(false);
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.schemaPanelOpen()) this.closeSchemaPanel();
+    if (this.pinModalOpen()) this.closePinModal();
   }
 
   private assistantSqlFromDto(m: ChatMessageDto): string {

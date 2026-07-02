@@ -1,14 +1,15 @@
 import { afterNextRender, Component, ElementRef, EventEmitter, inject, Injector, Input, Output, ViewChild } from '@angular/core';
 
+import { IconComponent } from './icon.component';
 import { ResponseRendererComponent } from './response-renderer.component';
 
 @Component({
   selector: 'app-dashboard-card',
   standalone: true,
-  imports: [ResponseRendererComponent],
+  imports: [ResponseRendererComponent, IconComponent],
   template: `
     <div class="dcard" [class.dcard-highlight]="highlighted">
-      <div class="drag-bar dcard-drag-handle" title="Drag to reposition">⋮⋮</div>
+      <div class="drag-bar dcard-drag-handle" title="Drag to reposition"><app-icon name="more-horizontal" [size]="14" /></div>
       <div class="head">
         <div class="title-wrap">
           @if (editing) {
@@ -33,7 +34,7 @@ import { ResponseRendererComponent } from './response-renderer.component';
                 (mousedown)="$event.stopPropagation()"
                 (click)="startEdit($event)"
               >
-                ✎
+                <app-icon name="edit" [size]="12" />
               </button>
             }
           }
@@ -59,7 +60,7 @@ import { ResponseRendererComponent } from './response-renderer.component';
                 (mousedown)="$event.stopPropagation()"
                 (click)="onRefresh($event)"
               >
-                ↻
+                <app-icon name="refresh" [size]="12" />
               </button>
             }
           } @else {
@@ -74,7 +75,7 @@ import { ResponseRendererComponent } from './response-renderer.component';
               (mousedown)="$event.stopPropagation()"
               (click)="onRemove($event)"
             >
-              ✕
+              <app-icon name="close" [size]="12" />
             </button>
           }
         </div>
@@ -171,6 +172,9 @@ import { ResponseRendererComponent } from './response-renderer.component';
       }
       .rename-btn,
       .remove-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         width: 24px;
         height: 24px;
         padding: 0;
@@ -220,6 +224,9 @@ import { ResponseRendererComponent } from './response-renderer.component';
         border-color: var(--border-focus);
       }
       .refresh-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         width: 24px;
         height: 24px;
         padding: 0;

@@ -7,10 +7,11 @@ import {
   PromptStudioService,
   PromptTemplate,
 } from '../../core/prompt-studio.service';
+import { IconComponent } from '../../shared/icon.component';
 
 @Component({
   standalone: true,
-  imports: [RouterLink],
+  imports: [RouterLink, IconComponent],
   template: `
     <div class="page">
       <header class="head">
@@ -18,7 +19,7 @@ import {
           <h1>Prompt Library</h1>
           <p class="subtitle">All prompt templates you own or that are shared with your team.</p>
         </div>
-        <a routerLink="/prompt-studio" class="btn-primary">+ Create in Studio</a>
+        <a routerLink="/prompt-studio" class="btn btn-primary"><app-icon name="plus" [size]="14" /> Create in Studio</a>
       </header>
 
       <div class="toolbar">
@@ -39,11 +40,20 @@ import {
       </div>
 
       @if (loading()) {
-        <p class="muted">Loading prompts…</p>
+        <div class="grid" aria-hidden="true">
+          @for (i of [1, 2, 3, 4, 5, 6]; track i) {
+            <article class="card">
+              <div class="skeleton" style="width: 60%; height: 16px; margin-bottom: 10px;"></div>
+              <div class="skeleton" style="width: 90%; height: 12px; margin-bottom: 8px;"></div>
+              <div class="skeleton" style="width: 70%; height: 12px; margin-bottom: 14px;"></div>
+              <div class="skeleton" style="width: 40%; height: 30px; border-radius: var(--radius-md);"></div>
+            </article>
+          }
+        </div>
       } @else if (templates().length === 0) {
         <div class="empty">
           <p>No prompts match these filters.</p>
-          <a routerLink="/prompt-studio" class="btn-secondary">Create your first prompt</a>
+          <a routerLink="/prompt-studio" class="btn btn-secondary">Create your first prompt</a>
         </div>
       } @else {
         <div class="grid">
@@ -64,7 +74,7 @@ import {
               }
               <p class="meta">Version {{ t.latest_version ?? 1 }}</p>
               <div class="actions">
-                <a class="btn-secondary" [routerLink]="['/prompt-studio']" [queryParams]="{ template: t.id }">
+                <a class="btn btn-secondary" [routerLink]="['/prompt-studio']" [queryParams]="{ template: t.id }">
                   Open in Studio
                 </a>
               </div>
@@ -103,13 +113,6 @@ import {
     .desc { margin: 0; color: var(--text-2); font-size: var(--text-sm); line-height: 1.5; }
     .meta { margin: 0; font-size: var(--text-xs); color: var(--text-muted); }
     .actions { display: flex; gap: 8px; margin-top: 4px; }
-    .btn-primary, .btn-secondary {
-      display: inline-flex; align-items: center; justify-content: center; padding: 9px 14px;
-      border-radius: var(--radius-md); text-decoration: none; font-weight: 550; font-size: var(--text-sm);
-      border: 1px solid transparent; cursor: pointer;
-    }
-    .btn-primary { background: var(--primary); color: var(--on-primary); }
-    .btn-secondary { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
     .empty {
       padding: var(--space-8); text-align: center; border: 1px dashed var(--border-strong);
       border-radius: var(--radius-lg); background: var(--surface);

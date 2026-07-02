@@ -1,34 +1,58 @@
-import { Component, OnInit, inject } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { GridsterItem, GridsterModule, DisplayGrid, GridType } from 'angular-gridster2';
 
 import { DashboardDetail, DashboardService } from '../../core/dashboard.service';
 import { DashboardCardComponent } from '../../shared/dashboard-card.component';
+import { IconComponent } from '../../shared/icon.component';
 
 @Component({
   standalone: true,
-  imports: [GridsterModule, DashboardCardComponent],
+  imports: [GridsterModule, DashboardCardComponent, IconComponent],
   template: `
     <div class="page">
-      <header>
-        <span class="brand-mark">IQ</span>
-        <h1>{{ dashboard?.name }}</h1>
-        <span class="badge">Read-only</span>
-      </header>
-
-      <div class="canvas-shell">
-        <gridster [options]="options">
-          @for (item of gridItems; track item.card.id) {
-            <gridster-item [item]="item.grid">
-              <app-dashboard-card
-                [title]="item.card.title"
-                [refreshMode]="item.card.refresh_mode"
-                [payload]="item.payload"
-              />
-            </gridster-item>
+      @if (loading()) {
+        <header>
+          <div class="skeleton" style="width: 32px; height: 32px; border-radius: 9px;"></div>
+          <div class="skeleton" style="width: 200px; height: 22px;"></div>
+        </header>
+        <div class="skeleton-grid" aria-hidden="true">
+          @for (i of [1, 2, 3, 4]; track i) {
+            <div class="skeleton" style="height: 180px; border-radius: var(--radius-md);"></div>
           }
-        </gridster>
-      </div>
+        </div>
+      } @else if (loadError()) {
+        <div class="state-banner error">
+          <p>{{ loadError() }}</p>
+        </div>
+      } @else {
+        <header>
+          <span class="brand-mark">IQ</span>
+          <h1>{{ dashboard?.name }}</h1>
+          <span class="badge">Read-only</span>
+        </header>
+
+        @if (gridItems.length === 0) {
+          <div class="empty-state">
+            <div class="icon"><app-icon name="grid" [size]="28" /></div>
+            <p>This dashboard has no cards yet.</p>
+          </div>
+        } @else {
+          <div class="canvas-shell">
+            <gridster [options]="options">
+              @for (item of gridItems; track item.card.id) {
+                <gridster-item [item]="item.grid">
+                  <app-dashboard-card
+                    [title]="item.card.title"
+                    [refreshMode]="item.card.refresh_mode"
+                    [payload]="item.payload"
+                  />
+                </gridster-item>
+              }
+            </gridster>
+          </div>
+        }
+      }
     </div>
   `,
   styles: [
@@ -86,12 +110,40 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         display: block;
         height: 100%;
       }
+      .skeleton-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: var(--space-4);
+      }
+      .state-banner {
+        padding: var(--space-8);
+        text-align: center;
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text-2);
+      }
+      .state-banner.error { color: var(--danger); border-color: var(--danger-soft); background: var(--danger-soft); }
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: var(--space-10);
+        border-radius: var(--radius-lg);
+        border: 1px dashed var(--border-strong);
+        color: var(--text-muted);
+      }
     `,
   ],
 })
 export class PublicDashboardComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly dashboards = inject(DashboardService);
+
+  readonly loading = signal(true);
+  readonly loadError = signal('');
 
   dashboard: DashboardDetail | null = null;
   gridItems: { card: { id: string; title: string; refresh_mode: string }; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }[] = [];
@@ -132,6 +184,11 @@ export class PublicDashboardComponent implements OnInit {
           } as GridsterItem,
           payload: card.snapshot_response_json as { response_type: string; data: Record<string, unknown> },
         }));
+        this.loading.set(false);
+      },
+      error: (err: { error?: { detail?: string } }) => {
+        this.loading.set(false);
+        this.loadError.set(err?.error?.detail ?? 'This dashboard link is invalid or no longer shared.');
       },
     });
   }

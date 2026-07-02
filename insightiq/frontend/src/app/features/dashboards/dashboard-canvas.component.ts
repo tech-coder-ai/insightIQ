@@ -1,21 +1,26 @@
-import { AfterViewInit, Component, ElementRef, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
-import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { AfterViewInit, Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild, inject, signal } from '@angular/core';
+import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { GridsterConfig, GridsterItem, GridsterModule, DisplayGrid, GridType } from 'angular-gridster2';
 import { Subscription, combineLatest, interval } from 'rxjs';
 
+import { ConfirmService } from '../../core/confirm.service';
 import { DashboardCard, DashboardDetail, DashboardService } from '../../core/dashboard.service';
 import { ExportService } from '../../core/export.service';
 import { ReportService } from '../../core/report.service';
+import { ToastService } from '../../core/toast.service';
 import { DashboardCardComponent } from '../../shared/dashboard-card.component';
+import { IconComponent } from '../../shared/icon.component';
 
 @Component({
   standalone: true,
   imports: [
     ReactiveFormsModule,
+    FormsModule,
     RouterLink,
     GridsterModule,
     DashboardCardComponent,
+    IconComponent,
   ],
   template: `
     <div class="page">
@@ -34,9 +39,8 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         </div>
         <div class="actions">
           <button type="button" class="btn btn-secondary btn-sm" (click)="refreshLiveCards()">Refresh live</button>
-          <button type="button" class="btn btn-ghost btn-sm" (click)="exportDashboard('pdf')">Export PDF</button>
-          <button type="button" class="btn btn-ghost btn-sm" (click)="exportDashboard('pptx')">Export PPT</button>
-          <button type="button" class="btn btn-ghost btn-sm" (click)="scheduleReport()">Schedule email</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="openExportModal()">Export…</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="openScheduleModal()">Schedule email</button>
           <button type="button" class="btn btn-primary btn-sm" (click)="share()">Share</button>
         </div>
       </header>
@@ -52,9 +56,76 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         <p class="share">Share link: <code>{{ shareUrl }}</code></p>
       }
 
+      @if (exportModalOpen()) {
+        <div class="modal-backdrop" (click)="closeExportModal()">
+          <div class="modal" role="dialog" aria-modal="true" aria-label="Export dashboard" (click)="$event.stopPropagation()">
+            <div class="modal-head">
+              <h2>Export dashboard</h2>
+              <button type="button" class="icon-btn" aria-label="Close" (click)="closeExportModal()"><app-icon name="close" [size]="14" /></button>
+            </div>
+            <label class="modal-field">
+              <span>Format</span>
+              <select [(ngModel)]="exportFormat">
+                <option value="pdf">PDF document</option>
+                <option value="pptx">PowerPoint deck</option>
+              </select>
+            </label>
+            <label class="modal-checkbox">
+              <input type="checkbox" [(ngModel)]="exportIncludeFilters" />
+              <span>Include currently applied filters</span>
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn btn-ghost" (click)="closeExportModal()">Cancel</button>
+              <button type="button" class="btn btn-primary" [disabled]="exporting()" (click)="confirmExport()">
+                {{ exporting() ? 'Exporting…' : 'Export' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+
+      @if (scheduleModalOpen()) {
+        <div class="modal-backdrop" (click)="closeScheduleModal()">
+          <div class="modal" role="dialog" aria-modal="true" aria-label="Schedule email report" (click)="$event.stopPropagation()">
+            <div class="modal-head">
+              <h2>Schedule email report</h2>
+              <button type="button" class="icon-btn" aria-label="Close" (click)="closeScheduleModal()"><app-icon name="close" [size]="14" /></button>
+            </div>
+            @if (scheduleError()) {
+              <div class="modal-err">{{ scheduleError() }}</div>
+            }
+            <label class="modal-field">
+              <span>Recipient email</span>
+              <input class="input" type="email" [(ngModel)]="scheduleEmail" placeholder="you@company.com" />
+            </label>
+            <label class="modal-field">
+              <span>Format</span>
+              <select [(ngModel)]="scheduleFormat">
+                <option value="pdf">PDF document</option>
+                <option value="pptx">PowerPoint deck</option>
+              </select>
+            </label>
+            <label class="modal-field">
+              <span>Frequency</span>
+              <select [(ngModel)]="scheduleIntervalSeconds">
+                <option [ngValue]="3600">Hourly</option>
+                <option [ngValue]="86400">Daily</option>
+                <option [ngValue]="604800">Weekly</option>
+              </select>
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn btn-ghost" (click)="closeScheduleModal()">Cancel</button>
+              <button type="button" class="btn btn-primary" [disabled]="scheduling()" (click)="confirmSchedule()">
+                {{ scheduling() ? 'Scheduling…' : 'Schedule' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+
       @if (gridItems.length === 0) {
         <div class="empty-state">
-          <div class="icon">📊</div>
+          <div class="icon"><app-icon name="chart" [size]="28" /></div>
           <p>This dashboard has no cards yet.</p>
           <p class="hint">Pin a query result from <a routerLink="/talk-to-data">Talk to Data</a> to get started.</p>
         </div>
@@ -206,6 +277,31 @@ import { DashboardCardComponent } from '../../shared/dashboard-card.component';
         height: 100%;
         min-height: 0;
       }
+      .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); }
+      .modal-head h2 { margin: 0; font-size: var(--text-lg); }
+      .modal-err { margin-bottom: 12px; color: var(--danger); font-size: var(--text-sm); }
+      .modal-field {
+        display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px;
+        font-size: var(--text-xs); color: var(--text-2); font-weight: 550;
+      }
+      .modal-field input, .modal-field select {
+        padding: 9px 12px; border-radius: var(--radius-md);
+        border: 1px solid var(--border-strong); background: var(--input-bg);
+        color: var(--text); font-size: var(--text-base); font-family: inherit;
+      }
+      .modal-checkbox {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
+        font-size: var(--text-sm); color: var(--text-2); cursor: pointer;
+      }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+
+      @media (max-width: 640px) {
+        header { flex-direction: column; align-items: stretch; }
+        .actions { width: 100%; }
+        .actions .btn { flex: 1; }
+        .filters { flex-direction: column; align-items: stretch; }
+        .filters .input { width: 100%; min-width: 0; }
+      }
     `,
   ],
 })
@@ -215,6 +311,8 @@ export class DashboardCanvasComponent implements OnInit, AfterViewInit, OnDestro
   private readonly exportService = inject(ExportService);
   private readonly reports = inject(ReportService);
   private readonly fb = inject(FormBuilder);
+  private readonly confirmDialog = inject(ConfirmService);
+  private readonly toast = inject(ToastService);
 
   @ViewChild('canvasShell') canvasShell?: ElementRef<HTMLElement>;
 
@@ -253,6 +351,18 @@ export class DashboardCanvasComponent implements OnInit, AfterViewInit, OnDestro
     date_from: [''],
     date_to: [''],
   });
+
+  readonly exportModalOpen = signal(false);
+  readonly exporting = signal(false);
+  exportFormat: 'pdf' | 'pptx' = 'pdf';
+  exportIncludeFilters = true;
+
+  readonly scheduleModalOpen = signal(false);
+  readonly scheduling = signal(false);
+  readonly scheduleError = signal('');
+  scheduleEmail = '';
+  scheduleFormat: 'pdf' | 'pptx' = 'pdf';
+  scheduleIntervalSeconds = 3600;
 
   ngOnInit(): void {
     this.routeSub = combineLatest([this.route.paramMap, this.route.queryParamMap]).subscribe(([params, query]) => {
@@ -403,9 +513,15 @@ export class DashboardCanvasComponent implements OnInit, AfterViewInit, OnDestro
     this.dashboards.updateFilters(this.dashboardId, this.filterForm.getRawValue()).subscribe();
   }
 
-  removeCard(item: { card: DashboardCard; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }): void {
+  async removeCard(item: { card: DashboardCard; grid: GridsterItem; payload: { response_type: string; data: Record<string, unknown> } }): Promise<void> {
     const label = item.card.title || 'this pinned item';
-    if (!confirm(`Remove "${label}" from this dashboard?`)) return;
+    const ok = await this.confirmDialog.ask({
+      title: `Remove "${label}"?`,
+      message: 'This removes the card from this dashboard.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
 
     this.dashboards.removeCard(this.dashboardId, item.card.id).subscribe({
       next: () => {
@@ -471,24 +587,71 @@ export class DashboardCanvasComponent implements OnInit, AfterViewInit, OnDestro
     });
   }
 
-  exportDashboard(format: 'pdf' | 'pptx'): void {
-    this.exportService.exportDashboard(this.dashboardId, format).subscribe({
-      next: (res) => this.exportService.downloadBlob(res, `dashboard.${format}`),
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.exportModalOpen()) this.closeExportModal();
+    if (this.scheduleModalOpen()) this.closeScheduleModal();
+  }
+
+  openExportModal(): void {
+    this.exportModalOpen.set(true);
+  }
+
+  closeExportModal(): void {
+    if (this.exporting()) return;
+    this.exportModalOpen.set(false);
+  }
+
+  confirmExport(): void {
+    this.exporting.set(true);
+    this.exportService.exportDashboard(this.dashboardId, this.exportFormat, this.exportIncludeFilters).subscribe({
+      next: (res) => {
+        this.exportService.downloadBlob(res, `dashboard.${this.exportFormat}`);
+        this.exporting.set(false);
+        this.exportModalOpen.set(false);
+      },
+      error: () => {
+        this.exporting.set(false);
+        this.toast.error('Could not export dashboard.');
+      },
     });
   }
 
-  scheduleReport(): void {
-    const email = window.prompt('Recipient email for scheduled PDF report?');
-    if (!email) return;
+  openScheduleModal(): void {
+    this.scheduleError.set('');
+    this.scheduleModalOpen.set(true);
+  }
+
+  closeScheduleModal(): void {
+    if (this.scheduling()) return;
+    this.scheduleModalOpen.set(false);
+  }
+
+  confirmSchedule(): void {
+    const email = this.scheduleEmail.trim();
+    if (!email) {
+      this.scheduleError.set('Recipient email is required.');
+      return;
+    }
+    this.scheduling.set(true);
+    this.scheduleError.set('');
     this.reports
       .create({
         dashboard_id: this.dashboardId,
         recipient_email: email,
-        interval_seconds: 3600,
-        export_format: 'pdf',
+        interval_seconds: this.scheduleIntervalSeconds,
+        export_format: this.scheduleFormat,
       })
       .subscribe({
-        next: () => window.alert('Report scheduled (hourly). Check backend logs for dev email delivery.'),
+        next: () => {
+          this.scheduling.set(false);
+          this.scheduleModalOpen.set(false);
+          this.scheduleEmail = '';
+        },
+        error: () => {
+          this.scheduling.set(false);
+          this.scheduleError.set('Could not schedule the report. Please try again.');
+        },
       });
   }
 }

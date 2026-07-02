@@ -4,6 +4,9 @@ import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
 import { API_BASE } from '../../core/api.config';
+import { ConfirmService } from '../../core/confirm.service';
+import { ToastService } from '../../core/toast.service';
+import { IconComponent } from '../../shared/icon.component';
 
 type DataSource = {
   id: string;
@@ -59,7 +62,7 @@ const PAGILA_SAMPLE = {
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule],
+  imports: [ReactiveFormsModule, IconComponent],
   template: `
     <div class="page">
       <div class="page-header">
@@ -78,7 +81,7 @@ const PAGILA_SAMPLE = {
         <div class="panel">
           <div class="panel-header">
             <h2>New datasource</h2>
-            <button class="btn-ghost" (click)="cancelForm()">✕ Cancel</button>
+            <button class="btn btn-ghost" (click)="cancelForm()"><app-icon name="close" [size]="14" /> Cancel</button>
           </div>
 
           <!-- Connector type picker -->
@@ -105,7 +108,7 @@ const PAGILA_SAMPLE = {
             <div class="selected-connector">
               <span class="connector-icon">{{ selectedConnector()!.icon }}</span>
               <strong>{{ selectedConnector()!.label }}</strong>
-              <button class="btn-ghost small" (click)="selectedConnector.set(null)">Change</button>
+              <button class="btn btn-ghost btn-sm" (click)="selectedConnector.set(null)">Change</button>
             </div>
 
             <form [formGroup]="form" (ngSubmit)="continueToScope()">
@@ -132,7 +135,7 @@ const PAGILA_SAMPLE = {
                       <p>DVD rental dataset from the internet: 2,000 films, 16,000+ rentals, customers, payments, and stores.</p>
                       <code>./scripts/load_pagila_sample_db.sh</code> if it is not loaded yet.
                     </div>
-                    <button type="button" class="btn-ghost small" (click)="applyPagilaSample()">Use Pagila sample</button>
+                    <button type="button" class="btn btn-ghost btn-sm" (click)="applyPagilaSample()">Use Pagila sample</button>
                   </div>
                 }
                 <div class="form-grid">
@@ -285,10 +288,10 @@ const PAGILA_SAMPLE = {
                       <input [value]="glob.table" (input)="updateGlob($index, 'table', $any($event.target).value)" placeholder="sales" />
                       <span>→</span>
                       <input [value]="glob.pattern" (input)="updateGlob($index, 'pattern', $any($event.target).value)" placeholder="s3://bucket/sales/year=*/*.parquet" />
-                      <button type="button" class="btn-ghost small" (click)="removeGlob($index)">✕</button>
+                      <button type="button" class="btn btn-ghost btn-sm" aria-label="Remove glob" (click)="removeGlob($index)"><app-icon name="close" [size]="13" /></button>
                     </div>
                   }
-                  <button type="button" class="btn-ghost small" (click)="addGlob()">+ Add file glob</button>
+                  <button type="button" class="btn btn-ghost btn-sm" (click)="addGlob()"><app-icon name="plus" [size]="13" /> Add file glob</button>
                 </div>
               }
 
@@ -315,7 +318,7 @@ const PAGILA_SAMPLE = {
                 }
 
                 <div class="form-actions">
-                  <button type="submit" class="btn-primary" [disabled]="!canSubmit() || saving()">
+                  <button type="submit" class="btn btn-primary" [disabled]="!canSubmit() || saving()">
                     {{ saving() ? 'Connecting…' : 'Continue to table selection →' }}
                   </button>
                 </div>
@@ -330,8 +333,8 @@ const PAGILA_SAMPLE = {
                     <p class="hint">Choose what this datasource exposes to AI queries. You can change this later on the datasource detail page.</p>
                   </div>
                   <div class="scope-actions-top">
-                    <button type="button" class="btn-ghost small" (click)="selectAllScope()">Select all</button>
-                    <button type="button" class="btn-ghost small" (click)="clearScope()">Clear</button>
+                    <button type="button" class="btn btn-ghost btn-sm" (click)="selectAllScope()">Select all</button>
+                    <button type="button" class="btn btn-ghost btn-sm" (click)="clearScope()">Clear</button>
                   </div>
                 </div>
 
@@ -372,8 +375,8 @@ const PAGILA_SAMPLE = {
                 </div>
 
                 <div class="form-actions">
-                  <button type="button" class="btn-ghost" (click)="backToConnect()">← Back</button>
-                  <button type="button" class="btn-primary" [disabled]="!hasScopeSelection() || saving()" (click)="register()">
+                  <button type="button" class="btn btn-ghost" (click)="backToConnect()">← Back</button>
+                  <button type="button" class="btn btn-primary" [disabled]="!hasScopeSelection() || saving()" (click)="register()">
                     {{ saving() ? 'Registering…' : 'Register datasource' }}
                   </button>
                 </div>
@@ -384,7 +387,20 @@ const PAGILA_SAMPLE = {
       }
 
       <!-- ── Datasource list ── -->
-      @if (sources().length === 0 && !showForm()) {
+      @if (sourcesLoading()) {
+        <div class="source-grid" aria-hidden="true">
+          @for (i of [1, 2, 3]; track i) {
+            <div class="source-card skeleton-card">
+              <div class="skeleton" style="width: 40px; height: 40px; border-radius: var(--radius-md);"></div>
+              <div style="flex: 1; display: flex; flex-direction: column; gap: 8px;">
+                <div class="skeleton" style="width: 60%; height: 16px;"></div>
+                <div class="skeleton" style="width: 40%; height: 12px;"></div>
+                <div class="skeleton" style="width: 80%; height: 12px;"></div>
+              </div>
+            </div>
+          }
+        </div>
+      } @else if (sources().length === 0 && !showForm()) {
         <div class="empty">
           <div class="empty-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/></svg>
@@ -419,10 +435,10 @@ const PAGILA_SAMPLE = {
               </div>
             </div>
             <div class="source-actions">
-              <button class="btn-ghost small" (click)="manage(ds.id)">Manage</button>
-              <button class="btn-ghost small" (click)="talkTo(ds.id)">Talk to it</button>
-              <button class="btn-ghost small" (click)="testConnection(ds.id)">Test</button>
-              <button class="btn-danger small" (click)="deleteSource(ds.id)">Delete</button>
+              <button class="btn btn-ghost btn-sm" (click)="manage(ds.id)">Manage</button>
+              <button class="btn btn-ghost btn-sm" (click)="talkTo(ds.id)">Talk to it</button>
+              <button class="btn btn-ghost btn-sm" (click)="testConnection(ds.id)">Test</button>
+              <button class="btn btn-danger btn-sm" (click)="deleteSource(ds.id)">Delete</button>
             </div>
           </article>
         }
@@ -431,32 +447,6 @@ const PAGILA_SAMPLE = {
   `,
   styles: [`
     .page { max-width: 1100px; }
-
-    /* buttons */
-    .btn-primary {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 9px 16px; border-radius: var(--radius-md); border: none;
-      background: var(--primary); color: var(--on-primary); font-size: var(--text-base);
-      font-weight: 550; cursor: pointer; font-family: inherit;
-      transition: background var(--dur-fast) var(--ease);
-    }
-    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
-    .btn-primary:disabled { opacity: 0.5; cursor: default; }
-    .btn-ghost {
-      padding: 7px 12px; border-radius: var(--radius-md);
-      border: 1px solid var(--border-strong);
-      background: transparent; color: var(--text-2); cursor: pointer; font-size: var(--text-sm);
-      font-family: inherit; transition: all var(--dur-fast) var(--ease);
-    }
-    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
-    .btn-ghost.small { padding: 4px 9px; font-size: var(--text-xs); }
-    .btn-danger {
-      padding: 4px 9px; border-radius: var(--radius-md); font-size: var(--text-xs);
-      border: 1px solid var(--danger-soft); background: transparent;
-      color: var(--danger); cursor: pointer; font-family: inherit;
-      transition: background var(--dur-fast) var(--ease);
-    }
-    .btn-danger:hover { background: var(--danger-soft); }
 
     /* connector picker */
     .connector-grid {
@@ -621,6 +611,12 @@ const PAGILA_SAMPLE = {
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
       gap: 14px;
     }
+    .source-card.skeleton-card {
+      flex-direction: row;
+      align-items: center;
+      gap: 14px;
+      padding: var(--space-5);
+    }
     .source-card {
       display: flex;
       flex-direction: column;
@@ -671,9 +667,12 @@ export class DatasourcesComponent implements OnInit {
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
   private readonly router = inject(Router);
+  private readonly toast = inject(ToastService);
+  private readonly confirmDialog = inject(ConfirmService);
 
   readonly connectors = CONNECTORS;
   readonly sources = signal<DataSource[]>([]);
+  readonly sourcesLoading = signal(true);
   readonly showForm = signal(false);
   readonly selectedConnector = signal<ConnectorType | null>(null);
   readonly saving = signal(false);
@@ -714,8 +713,13 @@ export class DatasourcesComponent implements OnInit {
   ngOnInit(): void { this.loadSources(); }
 
   loadSources(): void {
+    this.sourcesLoading.set(true);
     this.http.get<DataSource[]>(`${API_BASE}/talk-to-data/sources`).subscribe({
-      next: (s) => this.sources.set(s),
+      next: (s) => {
+        this.sources.set(s);
+        this.sourcesLoading.set(false);
+      },
+      error: () => this.sourcesLoading.set(false),
     });
   }
 
@@ -1026,16 +1030,22 @@ export class DatasourcesComponent implements OnInit {
 
   testConnection(id: string): void {
     this.http.post(`${API_BASE}/talk-to-data/sources/${id}/test`, {}).subscribe({
-      next: () => alert('Connection OK'),
-      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Connection failed'),
+      next: () => this.toast.success('Connection OK'),
+      error: (err: { error?: { detail?: string } }) => this.toast.error(err?.error?.detail ?? 'Connection failed'),
     });
   }
 
-  deleteSource(id: string): void {
-    if (!confirm('Remove this datasource? This cannot be undone.')) return;
+  async deleteSource(id: string): Promise<void> {
+    const ok = await this.confirmDialog.ask({
+      title: 'Remove this datasource?',
+      message: 'This cannot be undone.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     this.http.delete(`${API_BASE}/talk-to-data/sources/${id}`).subscribe({
       next: () => this.loadSources(),
-      error: (err: { error?: { detail?: string } }) => alert(err?.error?.detail ?? 'Delete failed'),
+      error: (err: { error?: { detail?: string } }) => this.toast.error(err?.error?.detail ?? 'Delete failed'),
     });
   }
 

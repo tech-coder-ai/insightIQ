@@ -1,9 +1,21 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, HostListener, computed, inject, signal } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { filter, map, startWith } from 'rxjs';
 
 import { AuthService } from './core/auth.service';
 import { ThemeService } from './core/theme.service';
+import { ConfirmDialogComponent } from './shared/confirm-dialog.component';
+import { ToastContainerComponent } from './shared/toast.component';
+
+type RouteMeta = { title: string; breadcrumb: string[] };
+
+function deepestSnapshot(snapshot: ActivatedRouteSnapshot): ActivatedRouteSnapshot {
+  let current = snapshot;
+  while (current.firstChild) current = current.firstChild;
+  return current;
+}
 
 type NavItem = { path: string; icon: string; label: string };
 type NavGroup = { title: string; items: NavItem[] };
@@ -30,7 +42,7 @@ const NAV: NavGroup[] = [
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, ToastContainerComponent, ConfirmDialogComponent],
   template: `
     <div class="app-frame" [class.with-shell]="showShell()" [class.sidebar-open]="sidebarOpen()">
       @if (showShell()) {
@@ -77,11 +89,6 @@ const NAV: NavGroup[] = [
           </div>
 
           <div class="sidebar-footer">
-            <button class="theme-toggle" (click)="toggleTheme()" [title]="isDark() ? 'Switch to light mode' : 'Switch to dark mode'">
-              <span class="theme-icon" [innerHTML]="isDark() ? iconMoon : iconSun"></span>
-              <span class="theme-label">{{ isDark() ? 'Dark mode' : 'Light mode' }}</span>
-            </button>
-
             <div class="user-row">
               <div class="avatar">{{ initials() }}</div>
               <div class="user-meta">
@@ -97,11 +104,63 @@ const NAV: NavGroup[] = [
       }
 
       <main class="main-outlet" [class.content]="showShell()">
+        @if (showShell()) {
+          <header class="topbar">
+            <div class="topbar-titles">
+              <nav class="breadcrumb" aria-label="Breadcrumb">
+                @for (crumb of breadcrumb(); track $index; let last = $last) {
+                  <span class="crumb" [class.last]="last">{{ crumb }}</span>
+                  @if (!last) { <span class="crumb-sep">/</span> }
+                }
+              </nav>
+              <h1 class="page-title">{{ pageTitle() }}</h1>
+            </div>
+
+            <div class="topbar-actions">
+              <button
+                type="button"
+                class="theme-toggle-btn"
+                (click)="toggleTheme()"
+                [title]="isDark() ? 'Switch to light mode' : 'Switch to dark mode'"
+                [attr.aria-label]="isDark() ? 'Switch to light mode' : 'Switch to dark mode'"
+              >
+                <span [innerHTML]="isDark() ? iconMoon : iconSun"></span>
+              </button>
+
+              <div class="user-menu">
+                <button
+                  type="button"
+                  class="user-menu-trigger"
+                  (click)="toggleUserMenu($event)"
+                  [attr.aria-expanded]="userMenuOpen()"
+                  aria-haspopup="menu"
+                  aria-label="Account menu"
+                >
+                  <span class="avatar sm">{{ initials() }}</span>
+                </button>
+                @if (userMenuOpen()) {
+                  <div class="user-menu-panel" role="menu">
+                    <div class="user-menu-head">
+                      <div class="user-name">{{ email() }}</div>
+                      <div class="user-sub">Workspace member</div>
+                    </div>
+                    <button type="button" class="user-menu-item" role="menuitem" (click)="logout()">
+                      <span [innerHTML]="iconLogout"></span>
+                      Sign out
+                    </button>
+                  </div>
+                }
+              </div>
+            </div>
+          </header>
+        }
         <div [class.content-inner]="showShell()">
           <router-outlet />
         </div>
       </main>
     </div>
+    <app-toast-container />
+    <app-confirm-dialog />
   `,
   styles: [`
     :host { display: block; height: 100vh; }
@@ -200,7 +259,7 @@ const NAV: NavGroup[] = [
       transition: color var(--dur-fast) var(--ease);
     }
     .nav-item:hover .nav-icon { color: var(--text-2); }
-    .nav-icon :global(svg) { width: 18px; height: 18px; }
+    .nav-icon ::ng-deep svg { width: 18px; height: 18px; }
 
     /* ── Footer ── */
     .sidebar-footer {
@@ -210,31 +269,6 @@ const NAV: NavGroup[] = [
       padding-top: var(--space-4);
       border-top: 1px solid var(--border);
     }
-
-    .theme-toggle {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      padding: 10px var(--space-3);
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--text-2);
-      cursor: pointer;
-      font-size: var(--text-sm);
-      font-family: inherit;
-      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-    }
-    .theme-toggle:hover { background: var(--surface-hover); color: var(--text); }
-    .theme-icon {
-      width: 18px;
-      height: 18px;
-      display: inline-flex;
-      color: var(--text-muted);
-    }
-    .theme-icon :global(svg) { width: 18px; height: 18px; }
-    .theme-label { font-weight: 500; }
 
     .user-row {
       display: flex;
@@ -277,8 +311,124 @@ const NAV: NavGroup[] = [
       display: inline-flex;
       transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
     }
-    .signout :global(svg) { width: 18px; height: 18px; }
+    .signout ::ng-deep svg { width: 18px; height: 18px; }
     .signout:hover { color: var(--danger); background: var(--danger-soft); }
+
+    /* ── Top bar ── */
+    .topbar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      padding: var(--space-4) var(--space-8);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-glass);
+      backdrop-filter: blur(16px) saturate(1.4);
+    }
+    .topbar-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+    }
+    .crumb-sep { color: var(--text-muted); opacity: 0.6; }
+    .crumb.last { color: var(--text-2); font-weight: 550; }
+    .page-title {
+      margin: 0;
+      font-family: var(--font-display);
+      font-size: var(--text-lg);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .topbar-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .theme-toggle-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    .theme-toggle-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .theme-toggle-btn ::ng-deep svg { width: 18px; height: 18px; display: block; }
+
+    .user-menu { position: relative; }
+    .user-menu-trigger {
+      display: inline-flex;
+      border: none;
+      background: none;
+      padding: 0;
+      cursor: pointer;
+      border-radius: var(--radius-md);
+    }
+    .avatar.sm {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-md);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 650;
+      background: var(--primary-soft);
+      color: var(--primary-text);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+    }
+    .user-menu-panel {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 1200;
+      width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      padding: var(--space-2);
+      animation: slide-up var(--dur) var(--ease-out);
+    }
+    .user-menu-head {
+      padding: var(--space-3) var(--space-3) var(--space-2);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 6px;
+    }
+    .user-menu-head .user-name {
+      font-size: var(--text-sm);
+      font-weight: 550;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .user-menu-head .user-sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+    .user-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 9px var(--space-3);
+      border-radius: var(--radius-sm);
+      border: none;
+      background: none;
+      color: var(--text-2);
+      font-size: var(--text-sm);
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    .user-menu-item:hover { background: var(--danger-soft); color: var(--danger); }
+    .user-menu-item ::ng-deep svg { width: 16px; height: 16px; }
 
     /* ── Content ── */
     .main-outlet { flex: 1; min-width: 0; }
@@ -359,6 +509,12 @@ const NAV: NavGroup[] = [
     @media (max-width: 720px) {
       .content-inner { padding: calc(var(--space-10) + 8px) var(--space-4) var(--space-6); }
     }
+
+    @media (max-width: 900px) {
+      .topbar { padding: var(--space-4) var(--space-4) var(--space-4) calc(var(--space-4) + 52px); }
+      .breadcrumb { display: none; }
+      .page-title { font-size: var(--text-base); }
+    }
   `],
 })
 export class AppComponent {
@@ -369,6 +525,22 @@ export class AppComponent {
   private readonly iconCache = new Map<string, SafeHtml>();
   readonly nav = NAV;
   readonly sidebarOpen = signal(false);
+  readonly userMenuOpen = signal(false);
+
+  private readonly routeMeta = toSignal(
+    this.router.events.pipe(
+      filter((e) => e instanceof NavigationEnd),
+      startWith(null),
+      map((): RouteMeta => {
+        const data = deepestSnapshot(this.router.routerState.snapshot.root).data as Partial<RouteMeta>;
+        return { title: data.title ?? 'InsightIQ', breadcrumb: data.breadcrumb ?? [] };
+      }),
+    ),
+    { initialValue: { title: 'InsightIQ', breadcrumb: [] } as RouteMeta },
+  );
+
+  readonly pageTitle = computed(() => this.routeMeta().title);
+  readonly breadcrumb = computed(() => this.routeMeta().breadcrumb);
 
   private readonly svg = 'stroke="currentColor" stroke-width="1.75" fill="none" stroke-linecap="round" stroke-linejoin="round"';
   readonly iconSun = this.safeIcon(`<svg viewBox="0 0 24 24" ${this.svg}><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>`);
@@ -387,6 +559,21 @@ export class AppComponent {
 
   toggleSidebar(): void { this.sidebarOpen.update((v) => !v); }
   closeSidebar(): void { this.sidebarOpen.set(false); }
+
+  toggleUserMenu(event: Event): void {
+    event.stopPropagation();
+    this.userMenuOpen.update((v) => !v);
+  }
+
+  @HostListener('document:click')
+  closeUserMenu(): void {
+    this.userMenuOpen.set(false);
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    this.userMenuOpen.set(false);
+  }
 
   logout(): void {
     this.auth.logout();

@@ -5,6 +5,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { API_BASE } from '../../core/api.config';
 import { AuthService } from '../../core/auth.service';
+import { IconComponent } from '../../shared/icon.component';
 
 type ColumnMeta = {
   name: string;
@@ -52,7 +53,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
 
 @Component({
   standalone: true,
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, IconComponent],
   template: `
     @if (detail(); as d) {
     <div class="page">
@@ -67,7 +68,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
           </div>
           <span class="status-pill" [attr.data-status]="d.metadata_status">{{ statusLabel(d.metadata_status) }}</span>
         </div>
-        <button class="btn-primary" (click)="talkToIt()">Talk to it →</button>
+        <button class="btn btn-primary" (click)="talkToIt()">Talk to it →</button>
       </div>
 
       <div class="tabs">
@@ -88,8 +89,9 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
         <div class="panel">
           <div class="panel-header">
             <h2>Purpose &amp; description</h2>
-            <button class="btn-ghost small" (click)="generateDescription()" [disabled]="busy()">
-              {{ busy() ? 'Working…' : '✨ Generate with AI' }}
+            <button class="btn btn-ghost btn-sm" (click)="generateDescription()" [disabled]="busy()">
+              @if (!busy()) { <app-icon name="sparkle" [size]="13" /> }
+              {{ busy() ? 'Working…' : 'Generate with AI' }}
             </button>
           </div>
           <label class="field">
@@ -101,7 +103,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
             <textarea [(ngModel)]="descDraft" rows="5" placeholder="Describe what this datasource contains and what it's used for…"></textarea>
           </label>
           <div class="form-actions">
-            <button class="btn-primary" (click)="saveDescription()" [disabled]="busy()">Save description</button>
+            <button class="btn btn-primary" (click)="saveDescription()" [disabled]="busy()">Save description</button>
           </div>
         </div>
       }
@@ -113,10 +115,10 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
             <h2>Connection settings</h2>
             <div class="panel-actions">
               @if (connectionEditable()) {
-                <button class="btn-ghost small" (click)="testConnectionDraft()" [disabled]="busy()">
+                <button class="btn btn-ghost btn-sm" (click)="testConnectionDraft()" [disabled]="busy()">
                   {{ busy() ? 'Testing…' : 'Test connection' }}
                 </button>
-                <button class="btn-primary small" (click)="saveConnection()" [disabled]="busy() || !nameDraft.trim()">
+                <button class="btn btn-primary btn-sm" (click)="saveConnection()" [disabled]="busy() || !nameDraft.trim()">
                   {{ busy() ? 'Saving…' : 'Save connection' }}
                 </button>
               }
@@ -236,10 +238,10 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
                     <input [value]="glob.table" (input)="updateConnectionGlob($index, 'table', $any($event.target).value)" placeholder="sales" />
                     <span>→</span>
                     <input [value]="glob.pattern" (input)="updateConnectionGlob($index, 'pattern', $any($event.target).value)" placeholder="s3://bucket/sales/*.parquet" />
-                    <button type="button" class="btn-ghost small" (click)="removeConnectionGlob($index)">✕</button>
+                    <button type="button" class="btn btn-ghost btn-sm" aria-label="Remove glob" (click)="removeConnectionGlob($index)"><app-icon name="close" [size]="13" /></button>
                   </div>
                 }
-                <button type="button" class="btn-ghost small" (click)="addConnectionGlob()">+ Add file glob</button>
+                <button type="button" class="btn btn-ghost btn-sm" (click)="addConnectionGlob()">+ Add file glob</button>
               </div>
             }
           }
@@ -252,8 +254,8 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
           <div class="panel-header">
             <h2>Tables &amp; columns</h2>
             <div class="panel-actions">
-              <button class="btn-ghost small" (click)="refreshSchema()" [disabled]="busy()">↻ Re-introspect</button>
-              <button class="btn-primary small" (click)="saveScope()" [disabled]="busy() || !hasScopeSelection()">Save scope</button>
+              <button class="btn btn-ghost btn-sm" (click)="refreshSchema()" [disabled]="busy()"><app-icon name="refresh" [size]="13" /> Re-introspect</button>
+              <button class="btn btn-primary btn-sm" (click)="saveScope()" [disabled]="busy() || !hasScopeSelection()">Save scope</button>
             </div>
           </div>
           <p class="hint">Checked columns are exposed to Talk to Data and prompt bindings. Uncheck sensitive fields you do not want the AI to use.</p>
@@ -322,7 +324,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
         <div class="panel">
           <div class="panel-header">
             <h2>Relationships</h2>
-            <button class="btn-primary small" (click)="saveRelationships()" [disabled]="busy()">Save relationships</button>
+            <button class="btn btn-primary btn-sm" (click)="saveRelationships()" [disabled]="busy()">Save relationships</button>
           </div>
           @if (!relationships().length) {
             <p class="empty-line">No relationships yet. Add foreign-key links below to help question answering.</p>
@@ -339,7 +341,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
                   <td class="mono">{{ r.to_table }}</td>
                   <td class="mono">{{ r.to_column }}</td>
                   <td><span class="badge" [class.idx]="r.source === 'introspected'">{{ r.source }}</span></td>
-                  <td><button class="btn-danger small" (click)="removeRelationship($index)">✕</button></td>
+                  <td><button class="btn btn-danger btn-sm" aria-label="Remove relationship" (click)="removeRelationship($index)"><app-icon name="close" [size]="13" /></button></td>
                 </tr>
               }
             </tbody>
@@ -365,7 +367,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
                 <option value="">column…</option>
                 @for (c of columnsOf(newRel.to_table); track c) { <option [value]="c">{{ c }}</option> }
               </select>
-              <button class="btn-ghost small" (click)="addRelationship()" [disabled]="!canAddRel()">+ Add</button>
+              <button class="btn btn-ghost btn-sm" (click)="addRelationship()" [disabled]="!canAddRel()">+ Add</button>
             </div>
           </div>
         </div>
@@ -377,7 +379,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
           <div class="panel-header">
             <h2>Glossary &amp; tags</h2>
             <div class="header-actions">
-              <button class="btn-primary small" (click)="saveGlossary()" [disabled]="busy()">Save</button>
+              <button class="btn btn-primary btn-sm" (click)="saveGlossary()" [disabled]="busy()">Save</button>
             </div>
           </div>
 
@@ -385,8 +387,9 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
             <div class="gen-row">
               <span class="section-label">Generate with AI</span>
               <input class="ctx-input" [(ngModel)]="glossaryContext" placeholder="Business context to guide definitions (optional)" />
-              <button class="btn-ghost small" (click)="generateGlossary()" [disabled]="busy()">
-                {{ busy() ? 'Working…' : '✨ Generate' }}
+              <button class="btn btn-ghost btn-sm" (click)="generateGlossary()" [disabled]="busy()">
+                @if (!busy()) { <app-icon name="sparkle" [size]="13" /> }
+                {{ busy() ? 'Working…' : 'Generate' }}
               </button>
             </div>
             <div class="gen-row">
@@ -430,7 +433,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
           <div class="panel-header">
             <h2>Approval</h2>
             @if (isAdmin) {
-              <button class="btn-primary small" (click)="approveAll()" [disabled]="busy() || !pendingCount()">Approve all</button>
+              <button class="btn btn-primary btn-sm" (click)="approveAll()" [disabled]="busy() || !pendingCount()">Approve all</button>
             }
           </div>
           @if (!isAdmin) {
@@ -445,7 +448,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
                 <strong>{{ t }}</strong>
                 <span class="muted">{{ approvedCountFor(t) }}/{{ countFor(t) }} approved</span>
                 @if (isAdmin) {
-                  <button class="btn-ghost small" (click)="approveTable(t)" [disabled]="busy()">Approve table</button>
+                  <button class="btn btn-ghost btn-sm" (click)="approveTable(t)" [disabled]="busy()">Approve table</button>
                 }
               </div>
               <table class="gloss-table">
@@ -459,7 +462,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
                       @if (isAdmin) {
                         <td>
                           @if (g.status !== 'approved') {
-                            <button class="btn-ghost small" (click)="approveOne(g)" [disabled]="busy()">Approve</button>
+                            <button class="btn btn-ghost btn-sm" (click)="approveOne(g)" [disabled]="busy()">Approve</button>
                           } @else { <span class="muted">✓</span> }
                         </td>
                       }
@@ -471,6 +474,26 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
           }
         </div>
       }
+    </div>
+    } @else {
+    <div class="page">
+      <div class="skeleton" style="width: 140px; height: 14px; margin-bottom: 18px;"></div>
+      <div class="page-header">
+        <div class="title-row">
+          <div class="skeleton" style="width: 44px; height: 44px; border-radius: var(--radius-md);"></div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="skeleton" style="width: 220px; height: 20px;"></div>
+            <div class="skeleton" style="width: 140px; height: 12px;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="skeleton" style="width: 100%; height: 40px; margin-bottom: 18px;"></div>
+      <div class="panel">
+        <div class="skeleton" style="width: 100%; height: 16px; margin-bottom: 12px;"></div>
+        <div class="skeleton" style="width: 90%; height: 16px; margin-bottom: 12px;"></div>
+        <div class="skeleton" style="width: 95%; height: 16px; margin-bottom: 12px;"></div>
+        <div class="skeleton" style="width: 70%; height: 16px;"></div>
+      </div>
     </div>
     }
   `,
@@ -488,7 +511,7 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
     .status-pill[data-status='approved'] { background: var(--success-soft); color: var(--success); }
     .status-pill[data-status='partially_approved'] { background: var(--warning-soft); color: var(--warning); }
 
-    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; overflow-x: auto; scrollbar-width: thin; }
     .tab { position: relative; padding: 10px 16px; background: none; border: none; color: var(--text-2); cursor: pointer; font-family: inherit; font-size: var(--text-base); border-bottom: 2px solid transparent; margin-bottom: -1px; }
     .tab:hover { color: var(--text); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
@@ -530,15 +553,6 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
     input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--primary-soft); }
     textarea { resize: vertical; }
 
-    .btn-primary { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: var(--radius-md); border: none; background: var(--primary); color: var(--on-primary); font-size: var(--text-base); font-weight: 550; cursor: pointer; font-family: inherit; }
-    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
-    .btn-primary:disabled { opacity: 0.5; cursor: default; }
-    .btn-primary.small { padding: 5px 11px; font-size: var(--text-sm); }
-    .btn-ghost { padding: 7px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); cursor: pointer; font-size: var(--text-sm); font-family: inherit; }
-    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
-    .btn-ghost.small { padding: 4px 9px; font-size: var(--text-xs); }
-    .btn-danger { padding: 4px 9px; border-radius: var(--radius-md); font-size: var(--text-xs); border: 1px solid var(--danger-soft); background: transparent; color: var(--danger); cursor: pointer; font-family: inherit; }
-    .btn-danger:hover { background: var(--danger-soft); }
 
     .form-actions { display: flex; gap: 10px; margin-top: 4px; }
     .msg-ok { color: var(--success); font-size: var(--text-sm); margin-bottom: 12px; }
@@ -578,6 +592,16 @@ type Tab = 'overview' | 'connection' | 'tables' | 'relationships' | 'glossary' |
 
     .approve-group { margin-bottom: 18px; }
     .approve-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+
+    @media (max-width: 720px) {
+      .page-header { flex-direction: column; align-items: stretch; }
+      .title-row { flex-wrap: wrap; }
+      .tab { padding: 10px 12px; font-size: var(--text-sm); white-space: nowrap; }
+      .panel { padding: var(--space-4); }
+      .panel-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+      .gen-row { flex-direction: column; align-items: stretch; }
+      .rel-form { flex-direction: column; align-items: stretch; }
+    }
   `],
 })
 export class DatasourceDetailComponent implements OnInit {

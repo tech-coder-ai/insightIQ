@@ -1,9 +1,14 @@
+import { DecimalPipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 
 import { API_BASE } from '../../core/api.config';
+import { ConfirmService } from '../../core/confirm.service';
+import { ExportService } from '../../core/export.service';
 import { MarkdownDirective } from '../../core/markdown.directive';
+import { ToastService } from '../../core/toast.service';
+import { IconComponent } from '../../shared/icon.component';
 import { PromptPickerComponent } from '../../shared/prompt-picker.component';
 
 type Collection = { id: string; name: string; rag_profile: string; doc_count?: number };
@@ -37,8 +42,24 @@ type DocumentView = {
   page_number: number | null;
 };
 type DocumentHighlightParts = { before: string; highlight: string; after: string };
-type AskResponse = { conversation_id: string; answer: string; answer_html: string; highlight_spans: HighlightSpan[] };
-type Message = { role: 'user' | 'assistant'; question?: string; answerMd?: string; highlights?: HighlightSpan[]; error?: string };
+type AskResponse = {
+  conversation_id: string;
+  answer: string;
+  answer_html: string;
+  highlight_spans: HighlightSpan[];
+  confidence?: number;
+  needs_clarification?: boolean;
+  clarifying_question?: string | null;
+};
+type Message = {
+  role: 'user' | 'assistant';
+  question?: string;
+  answerMd?: string;
+  highlights?: HighlightSpan[];
+  error?: string;
+  confidence?: number;
+  needsClarification?: boolean;
+};
 type Conversation = { id: string; title: string; starred: boolean; updated_at: string; datasource_id: string | null };
 type ChatMessageDto = { id: string; conversation_id: string; role: 'user' | 'assistant' | 'system'; content: string; metadata_json: { highlight_spans_json?: HighlightSpan[] }; created_at: string };
 
@@ -67,15 +88,14 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 const RAG_PROFILES = [
-  { value: 'naive',    label: 'Naive',    desc: 'Fast, simple vector search' },
-  { value: 'advanced', label: 'Advanced', desc: 'Re-ranking + HyDE query expansion' },
+  { value: 'standard', label: 'Standard', desc: 'Hybrid search, reranking, compression & citations' },
   { value: 'graph',    label: 'Graph',    desc: 'Neo4j knowledge graph traversal' },
-  { value: 'agentic',  label: 'Agentic',  desc: 'Multi-hop agent with reflection' },
+  { value: 'agentic',  label: 'Agentic',  desc: 'Multi-hop decomposition, HyDE & self-correction' },
 ];
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, FormsModule, MarkdownDirective, PromptPickerComponent],
+  imports: [ReactiveFormsModule, FormsModule, MarkdownDirective, PromptPickerComponent, DecimalPipe, IconComponent],
   template: `
     <div class="page page-chat">
       <div class="page-header">
@@ -120,7 +140,7 @@ const RAG_PROFILES = [
               <div [class]="colStatus().startsWith('✓') ? 'msg-ok' : 'msg-err'">{{ colStatus() }}</div>
             }
 
-            <button type="submit" class="btn-primary" [disabled]="colForm.invalid || colSaving()">
+            <button type="submit" class="btn btn-primary" [disabled]="colForm.invalid || colSaving()">
               {{ colSaving() ? 'Creating…' : 'Create collection' }}
             </button>
           </form>
@@ -149,7 +169,7 @@ const RAG_PROFILES = [
                     <div class="col-name">{{ c.name }}</div>
                     <div class="col-meta">{{ c.rag_profile }}</div>
                   </button>
-                  <button class="col-del" title="Delete collection" (click)="deleteCollection(c, $event)">✕</button>
+                  <button class="col-del" title="Delete collection" aria-label="Delete collection" (click)="deleteCollection(c, $event)"><app-icon name="close" [size]="13" /></button>
                 </div>
               }
             </div>
@@ -163,9 +183,19 @@ const RAG_PROFILES = [
                 </div>
 
                 @if (ingestMode() === 'file') {
+                  <div class="upload-meta">
+                    <label>
+                      <span>Document type (optional)</span>
+                      <input [(ngModel)]="uploadDocType" [ngModelOptions]="{standalone: true}" placeholder="e.g. contract, report, policy" />
+                    </label>
+                    <label>
+                      <span>Tags (optional, comma-separated)</span>
+                      <input [(ngModel)]="uploadTags" [ngModelOptions]="{standalone: true}" placeholder="e.g. renewal, 2026, finance" />
+                    </label>
+                  </div>
                   <label class="upload-area" [class.dragging]="dragging()" (dragover)="$event.preventDefault(); dragging.set(true)"
                     (dragleave)="dragging.set(false)" (drop)="onDrop($event)">
-                    <span class="upload-icon">📁</span>
+                    <span class="upload-icon"><app-icon name="upload" [size]="22" /></span>
                     <span>Drop file here or <u>browse</u></span>
                     <span class="upload-hint">PDF, DOCX, TXT, CSV, PPTX, MD</span>
                     <input type="file" (change)="onFile($event)" accept=".pdf,.docx,.txt,.csv,.pptx,.md" [disabled]="jobRunning()" />
@@ -191,7 +221,7 @@ const RAG_PROFILES = [
                         <input type="number" formControlName="max_pages" min="1" max="100" />
                       </label>
                     </div>
-                    <button type="submit" class="btn-primary" [disabled]="scrapeForm.invalid || jobRunning()">
+                    <button type="submit" class="btn btn-primary" [disabled]="scrapeForm.invalid || jobRunning()">
                       {{ jobRunning() ? 'Working…' : 'Scrape & index' }}
                     </button>
                     <span class="upload-hint">Same-site links only. Depth 0 indexes just the page you provide.</span>
@@ -206,8 +236,8 @@ const RAG_PROFILES = [
                         <div class="step" [attr.data-state]="stepState(j, st)">
                           <span class="dot">
                             @switch (stepState(j, st)) {
-                              @case ('done') { ✓ }
-                              @case ('error') { ✕ }
+                              @case ('done') { <app-icon name="check" [size]="11" /> }
+                              @case ('error') { <app-icon name="close" [size]="11" /> }
                               @case ('active') { <span class="spin"></span> }
                               @default { · }
                             }
@@ -243,13 +273,15 @@ const RAG_PROFILES = [
                             (keydown.enter)="saveRename(cv)" (keydown.escape)="renamingId.set(null)" (blur)="saveRename(cv)" />
                         } @else {
                           <button class="conv-main" (click)="openConversation(cv)">
-                            @if (cv.starred) { <span class="conv-star">★</span> }
+                            @if (cv.starred) { <span class="conv-star"><app-icon name="star-filled" [size]="12" /></span> }
                             <span class="conv-title">{{ cv.title }}</span>
                           </button>
                           <div class="conv-actions">
-                            <button class="icon-btn xs" [title]="cv.starred ? 'Unstar' : 'Star'" (click)="toggleStar(cv, $event)">{{ cv.starred ? '★' : '☆' }}</button>
-                            <button class="icon-btn xs" title="Rename" (click)="startRename(cv, $event)">✎</button>
-                            <button class="icon-btn xs danger" title="Delete" (click)="deleteConversation(cv, $event)">✕</button>
+                            <button class="icon-btn xs" [attr.aria-label]="cv.starred ? 'Unstar' : 'Star'" [title]="cv.starred ? 'Unstar' : 'Star'" (click)="toggleStar(cv, $event)">
+                              <app-icon [name]="cv.starred ? 'star-filled' : 'star-outline'" [size]="12" />
+                            </button>
+                            <button class="icon-btn xs" title="Rename" aria-label="Rename" (click)="startRename(cv, $event)"><app-icon name="edit" [size]="12" /></button>
+                            <button class="icon-btn xs danger" title="Delete" aria-label="Delete" (click)="deleteConversation(cv, $event)"><app-icon name="trash" [size]="12" /></button>
                           </div>
                         }
                       </div>
@@ -272,11 +304,20 @@ const RAG_PROFILES = [
               </div>
             } @else {
               <div class="chat-panel-head">
-                <strong>{{ selectedCollection()!.name }}</strong>
-                <span class="badge">{{ selectedCollection()!.rag_profile }}</span>
+                <div class="chat-panel-head-title">
+                  <strong>{{ selectedCollection()!.name }}</strong>
+                  <span class="badge">{{ selectedCollection()!.rag_profile }}</span>
+                </div>
+                @if (activeConversationId()) {
+                  <div class="chat-panel-head-actions">
+                    <button type="button" class="icon-btn xs" (click)="exportConversation('markdown')">Export MD</button>
+                    <button type="button" class="icon-btn xs" (click)="exportConversation('pdf')">Export PDF</button>
+                    <button type="button" class="icon-btn xs" (click)="exportConversation('pptx')">Export PPT</button>
+                  </div>
+                }
               </div>
 
-              <div class="chat-messages" #messagesPane>
+              <div class="chat-messages" #messagesPane role="log" aria-live="polite" aria-label="Conversation messages">
                 @if (messages().length === 0 && !loading()) {
                   <div class="chat-welcome">
                     <div class="icon-tile" aria-hidden="true">
@@ -325,10 +366,20 @@ const RAG_PROFILES = [
                       <div class="msg-row-inner">
                         <div class="msg-avatar bot" aria-hidden="true">IQ</div>
                         <div class="msg-body">
-                          <div class="msg-bubble assistant">
+                          <div class="msg-bubble assistant" [class.clarify]="msg.needsClarification">
                             @if (msg.error) {
                               <div class="error">{{ msg.error }}</div>
                             } @else {
+                              @if (msg.needsClarification) {
+                                <div class="clarify-badge">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                                  Needs clarification
+                                </div>
+                              } @else if (msg.confidence !== undefined && msg.confidence < 0.6) {
+                                <div class="confidence-badge low" [title]="'Confidence: ' + ((msg.confidence ?? 0) * 100 | number: '1.0-0') + '%'">
+                                  Low confidence answer
+                                </div>
+                              }
                               <div class="answer markdown" [appMarkdown]="msg.answerMd || ''"></div>
                               @if (msg.highlights && msg.highlights.length) {
                                 <div class="sources">
@@ -420,10 +471,10 @@ const RAG_PROFILES = [
 
     @if (documentViewOpen()) {
       <div class="modal-backdrop" (click)="closeDocumentView()">
-        <div class="modal doc-view-modal" (click)="$event.stopPropagation()">
+        <div class="modal doc-view-modal" role="dialog" aria-modal="true" [attr.aria-label]="documentView()?.filename ?? 'Document'" (click)="$event.stopPropagation()">
           <div class="modal-head">
             <h2>{{ documentView()?.filename ?? 'Document' }}</h2>
-            <button type="button" class="icon-btn" (click)="closeDocumentView()">✕</button>
+            <button type="button" class="icon-btn" aria-label="Close" (click)="closeDocumentView()"><app-icon name="close" [size]="14" /></button>
           </div>
           @if (documentViewLoading()) {
             <p class="modal-hint">Loading document…</p>
@@ -448,10 +499,10 @@ const RAG_PROFILES = [
 
     @if (sourcePreviewOpen()) {
       <div class="modal-backdrop" (click)="closeSourcePreview()">
-        <div class="modal preview-modal" (click)="$event.stopPropagation()">
+        <div class="modal preview-modal" role="dialog" aria-modal="true" aria-label="Source preview" (click)="$event.stopPropagation()">
           <div class="modal-head">
             <h2>Source preview</h2>
-            <button type="button" class="icon-btn" (click)="closeSourcePreview()">✕</button>
+            <button type="button" class="icon-btn" aria-label="Close" (click)="closeSourcePreview()"><app-icon name="close" [size]="14" /></button>
           </div>
           @if (sourcePreviewLoading()) {
             <p class="modal-hint">Loading excerpt…</p>
@@ -470,22 +521,6 @@ const RAG_PROFILES = [
   styles: [`
     .page { max-width: 1140px; }
     h2 { margin: 0 0 var(--space-4); font-size: var(--text-lg); }
-
-    .btn-primary {
-      padding: 9px 16px; border-radius: var(--radius-md); border: none;
-      background: var(--primary); color: var(--on-primary); font-size: var(--text-base);
-      font-weight: 550; cursor: pointer; font-family: inherit;
-      transition: background var(--dur-fast) var(--ease);
-    }
-    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
-    .btn-primary:disabled { opacity: 0.5; cursor: default; }
-    .btn-ghost {
-      padding: 7px 14px; border-radius: var(--radius-md);
-      border: 1px solid var(--border-strong);
-      background: transparent; color: var(--text-2); cursor: pointer; font-size: var(--text-sm);
-      font-family: inherit; transition: all var(--dur-fast) var(--ease);
-    }
-    .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
 
     /* panel */
     .panel {
@@ -590,7 +625,7 @@ const RAG_PROFILES = [
 
     /* chat — content-specific only; layout from global styles.css */
     .answer { line-height: 1.7; font-size: var(--text-base); }
-    .answer :global(cite) { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
+    .answer ::ng-deep cite { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
     .sources { display: grid; gap: 8px; margin-top: 4px; }
     .sources-head { font-size: var(--text-xs); color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
     .source-entry { display: grid; gap: 6px; }
@@ -614,6 +649,16 @@ const RAG_PROFILES = [
     .source-meta { font-size: var(--text-xs); color: var(--text-2); }
     .source-snippet { font-size: var(--text-sm); color: var(--text); line-height: 1.5; }
     .error { color: var(--danger); font-size: var(--text-sm); }
+
+    .upload-meta { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+    .msg-bubble.clarify { border: 1px dashed var(--warning, #d29922); background: var(--warning-soft, rgba(210, 153, 34, 0.08)); }
+    .clarify-badge, .confidence-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: var(--text-xs); font-weight: 650; padding: 3px 9px;
+      border-radius: 999px; margin-bottom: 8px; width: fit-content;
+    }
+    .clarify-badge { color: var(--warning, #d29922); background: var(--warning-soft, rgba(210, 153, 34, 0.12)); }
+    .confidence-badge.low { color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); }
 
     .edit-box { display: flex; flex-direction: column; gap: 8px; width: min(480px, 100%); }
     .edit-box textarea {
@@ -639,7 +684,6 @@ const RAG_PROFILES = [
     .url-form label { min-width: 0; }
     .url-form input, .url-form select { width: 100%; box-sizing: border-box; min-width: 0; }
     .url-row { display: grid; grid-template-columns: 1fr 84px; gap: 8px; }
-    .url-form .btn-primary { padding: 8px 14px; }
 
     /* stage stepper */
     .stepper {
@@ -707,9 +751,16 @@ const RAG_PROFILES = [
     .markdown thead th { background: var(--surface-3); font-weight: 650; }
     .markdown tbody tr:nth-child(even) { background: var(--surface-2); }
     .markdown hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
-    .markdown :global(cite) { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
+    .markdown ::ng-deep cite { font-style: normal; border-bottom: 1px dashed var(--primary-text); color: var(--primary-text); }
     .mermaid-diagram { margin: 14px 0; display: flex; justify-content: center; overflow-x: auto; }
     .mermaid-diagram svg { max-width: 100%; height: auto; }
+
+    .chat-panel-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chat-panel-head-title { display: flex; align-items: center; gap: 10px; }
+    .chat-panel-head-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
     /* ── conversation history ── */
     .history { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -739,8 +790,6 @@ const RAG_PROFILES = [
     .conv-title { font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .conv-actions { display: flex; gap: 2px; opacity: 0; flex-shrink: 0; transition: opacity var(--dur-fast) var(--ease); }
     .conv-item:hover .conv-actions, .conv-item.active .conv-actions { opacity: 1; }
-    .icon-btn.xs { padding: 2px 5px; font-size: 11px; }
-    .icon-btn.xs.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
     .rename-input {
       flex: 1; min-width: 0; padding: 5px 8px; border-radius: var(--radius-sm);
       border: 1px solid var(--border-focus); background: var(--input-bg); color: var(--text);
@@ -748,14 +797,8 @@ const RAG_PROFILES = [
     }
     .rename-input:focus { outline: none; box-shadow: 0 0 0 3px var(--primary-soft); }
 
-    .modal-backdrop {
-      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 1000;
-      display: grid; place-items: center; padding: var(--space-6);
-    }
-    .modal {
+    .modal.doc-view-modal, .modal.preview-modal {
       width: min(720px, 100%); max-height: 85vh; overflow: auto;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
-      padding: var(--space-5); box-shadow: var(--shadow-lg);
     }
     .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: var(--space-4); }
     .modal-head h2 { margin: 0; font-size: var(--text-lg); }
@@ -786,6 +829,9 @@ const RAG_PROFILES = [
 export class TalkToDocsComponent implements OnInit, OnDestroy {
   private readonly http = inject(HttpClient);
   private readonly fb = inject(FormBuilder);
+  private readonly exportService = inject(ExportService);
+  private readonly toast = inject(ToastService);
+  private readonly confirmDialog = inject(ConfirmService);
   private readonly messagesPane = viewChild<ElementRef<HTMLElement>>('messagesPane');
 
   readonly collections = signal<Collection[]>([]);
@@ -818,6 +864,8 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
   readonly dragging = signal(false);
 
   readonly ingestMode = signal<'file' | 'url'>('file');
+  uploadDocType = '';
+  uploadTags = '';
   readonly job = signal<IngestionJob | null>(null);
   readonly jobRunning = computed(() => this.job()?.status === 'processing');
 
@@ -838,7 +886,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
 
   readonly colForm = this.fb.group({
     name: ['', Validators.required],
-    rag_profile: ['naive', Validators.required],
+    rag_profile: ['standard', Validators.required],
   });
 
   readonly askForm = this.fb.group({
@@ -894,9 +942,15 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     });
   }
 
-  deleteCollection(c: Collection, ev: Event): void {
+  async deleteCollection(c: Collection, ev: Event): Promise<void> {
     ev.stopPropagation();
-    if (!confirm(`Delete collection "${c.name}"? This permanently removes its documents and index.`)) return;
+    const ok = await this.confirmDialog.ask({
+      title: `Delete collection "${c.name}"?`,
+      message: 'This permanently removes its documents and index.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     this.http.delete(`${API_BASE}/talk-to-docs/collections/${c.id}`).subscribe({
       next: () => {
         this.collections.update((list) => list.filter((x) => x.id !== c.id));
@@ -912,7 +966,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
         this.loadCollections();
       },
       error: (err: { error?: { detail?: string } }) => {
-        alert(err?.error?.detail ?? 'Could not delete collection.');
+        this.toast.error(err?.error?.detail ?? 'Could not delete collection.');
       },
     });
   }
@@ -979,9 +1033,15 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     });
   }
 
-  deleteConversation(cv: Conversation, ev: Event): void {
+  async deleteConversation(cv: Conversation, ev: Event): Promise<void> {
     ev.stopPropagation();
-    if (!confirm(`Delete conversation "${cv.title}"? This cannot be undone.`)) return;
+    const ok = await this.confirmDialog.ask({
+      title: `Delete conversation "${cv.title}"?`,
+      message: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     this.http.delete(`${API_BASE}/chat/conversations/${cv.id}`).subscribe({
       next: () => {
         if (this.activeConversationId() === cv.id) this.newChat();
@@ -993,6 +1053,15 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
   private reloadConversations(): void {
     const c = this.selectedCollection();
     if (c) this.loadConversations(c.id);
+  }
+
+  exportConversation(format: 'markdown' | 'pdf' | 'pptx'): void {
+    const id = this.activeConversationId();
+    if (!id) return;
+    const ext = format === 'markdown' ? 'md' : format;
+    this.exportService.exportConversation(id, format).subscribe({
+      next: (res) => this.exportService.downloadBlob(res, `conversation.${ext}`),
+    });
   }
 
   onFile(event: Event): void {
@@ -1011,6 +1080,8 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     if (!file || !this.selectedCollection() || this.jobRunning()) return;
     const form = new FormData();
     form.append('file', file);
+    if (this.uploadDocType.trim()) form.append('document_type', this.uploadDocType.trim());
+    if (this.uploadTags.trim()) form.append('tags', this.uploadTags.trim());
     this.http.post<IngestionJob>(
       `${API_BASE}/talk-to-docs/collections/${this.selectedCollection()!.id}/upload`, form
     ).subscribe({
@@ -1090,6 +1161,8 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
           role: 'assistant',
           answerMd: res.answer,
           highlights: res.highlight_spans,
+          confidence: res.confidence,
+          needsClarification: res.needs_clarification,
         }]);
         if (wasNew) this.reloadConversations();
         this.scrollToBottom();
@@ -1140,7 +1213,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
       },
       error: () => {
         this.sourcePreviewLoading.set(false);
-        alert('Could not load source excerpt.');
+        this.toast.error('Could not load source excerpt.');
       },
     });
   }
@@ -1169,7 +1242,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
           },
           error: (err: { error?: { detail?: string } }) => {
             this.documentViewLoading.set(false);
-            alert(err?.error?.detail ?? 'Could not load document.');
+            this.toast.error(err?.error?.detail ?? 'Could not load document.');
           },
         });
     };
@@ -1183,7 +1256,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
       next: (detail) => loadDocument({ ...h, char_start: detail.char_start, char_end: detail.char_end, page_number: detail.page_number }),
       error: () => {
         this.documentViewLoading.set(false);
-        alert('Could not resolve source location in document.');
+        this.toast.error('Could not resolve source location in document.');
       },
     });
   }
@@ -1198,6 +1271,12 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     this.sourcePreview.set(null);
     this.sourcePreviewLoading.set(false);
     this.sourcePreviewOpen.set(false);
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.documentViewOpen()) this.closeDocumentView();
+    if (this.sourcePreviewOpen()) this.closeSourcePreview();
   }
 
   private scrollToBottom(): void {

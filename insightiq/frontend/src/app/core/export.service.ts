@@ -15,11 +15,18 @@ export class ExportService {
     });
   }
 
-  exportDashboard(dashboardId: string, format: 'pdf' | 'pptx' | 'markdown' = 'pdf'): Observable<HttpResponse<Blob>> {
-    return this.http.get(`${API_BASE}/export/dashboards/${dashboardId}?format=${format}`, {
-      responseType: 'blob',
-      observe: 'response',
-    });
+  exportDashboard(
+    dashboardId: string,
+    format: 'pdf' | 'pptx' | 'markdown' = 'pdf',
+    includeFilters = true,
+  ): Observable<HttpResponse<Blob>> {
+    return this.http.get(
+      `${API_BASE}/export/dashboards/${dashboardId}?format=${format}&include_filters=${includeFilters}`,
+      {
+        responseType: 'blob',
+        observe: 'response',
+      },
+    );
   }
 
   downloadBlob(response: HttpResponse<Blob>, fallbackName: string): void {

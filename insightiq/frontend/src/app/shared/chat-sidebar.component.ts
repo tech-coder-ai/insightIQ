@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 
 import { API_BASE } from '../core/api.config';
 import { ExportService } from '../core/export.service';
+import { IconComponent } from './icon.component';
 
 type Conversation = {
   id: string;
@@ -16,7 +17,7 @@ type Conversation = {
 @Component({
   selector: 'app-chat-sidebar',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, IconComponent],
   template: `
     <aside class="sidebar">
       <div class="head">
@@ -26,6 +27,7 @@ type Conversation = {
           <div class="export-row">
             <button type="button" (click)="exportActive('markdown')">Export MD</button>
             <button type="button" (click)="exportActive('pdf')">Export PDF</button>
+            <button type="button" (click)="exportActive('pptx')">Export PPT</button>
           </div>
         }
       </div>
@@ -34,8 +36,8 @@ type Conversation = {
           <li [class.active]="c.id === activeId" (click)="select.emit(c.id)">
             <div class="row">
               <span class="title">{{ c.title }}</span>
-              <button type="button" (click)="toggleStar(c, $event)">
-                {{ c.starred ? '★' : '☆' }}
+              <button type="button" [attr.aria-label]="c.starred ? 'Unstar' : 'Star'" (click)="toggleStar(c, $event)">
+                <app-icon [name]="c.starred ? 'star-filled' : 'star-outline'" [size]="12" />
               </button>
             </div>
             @if (c.folder) {
@@ -154,10 +156,11 @@ export class ChatSidebarComponent implements OnInit {
       .subscribe({ next: () => this.load() });
   }
 
-  exportActive(format: 'markdown' | 'pdf'): void {
+  exportActive(format: 'markdown' | 'pdf' | 'pptx'): void {
     if (!this.activeId) return;
+    const ext = format === 'markdown' ? 'md' : format;
     this.exportService.exportConversation(this.activeId, format).subscribe({
-      next: (res) => this.exportService.downloadBlob(res, `conversation.${format === 'markdown' ? 'md' : 'pdf'}`),
+      next: (res) => this.exportService.downloadBlob(res, `conversation.${ext}`),
     });
   }
 }
