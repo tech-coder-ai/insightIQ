@@ -66,6 +66,15 @@ def test_chunker_never_ends_a_chunk_inside_markdown_table() -> None:
             pytest.fail(f"chunk ended mid-table at {c['char_end']} (table spans {table_start}-{table_end})")
 
 
+def test_chunker_emits_one_chunk_for_short_sections_without_overlap() -> None:
+    text = "# Alpha\n\nShort body.\n\n## Beta\n\nAnother tiny section.\n"
+    chunker = MarkdownAwareChunker(child_size=380, child_overlap=60, max_parent_size=1800)
+    chunks = chunker.chunk(text, document_id="doc-5")
+    assert len(chunks) == 2
+    assert "Short body." in chunks[0]["text"]
+    assert "Another tiny section." in chunks[1]["text"]
+
+
 def test_chunker_caps_parent_range_to_max_parent_size() -> None:
     body = "word " * 1000
     text = f"# Big Section\n\n{body}"

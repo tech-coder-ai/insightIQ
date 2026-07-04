@@ -485,6 +485,13 @@ Open:
 3. **Datasources** → add Postgres (or use **Use Pagila sample**)  
 4. **Talk to Data** / **Talk to Docs** — start chatting  
 
+**Talk to Docs extras (after migration `0012`):**
+
+- **Document versioning** — re-uploading the same filename in a collection creates a new version; only the current version is searched. Identical file content (SHA-256) is skipped.
+- **Collection admin** — in Talk to Docs, select a collection → **Admin** tab: overview stats, document versions/metadata, chunk browser.
+- **Citation preview** — click a reference or **View in document**; toggle **Extracted text** (indexed markdown) vs **Original document** (PDF canvas with bbox highlights, or Word HTML highlight) when the original file was stored at upload.
+- **Raw vector inspection** — Qdrant dashboard at http://localhost:6333/dashboard (collections named `insightiq_docs_*`).
+
 Ensure `OPENAI_API_KEY` is set in the same shell (or systemd env) where uvicorn runs, or LLM features will fall back to heuristics / error messages.
 
 ---
@@ -688,7 +695,7 @@ Adds: RapidOCR + ONNX Runtime — pure pip, no system Tesseract install required
 
 Installed by `npm install` from `frontend/package.json`.
 
-**Key libraries:** Angular 18, Gridster (dashboards), Marked + Mermaid (markdown answers), DOMPurify.
+**Key libraries:** Angular 18, Gridster (dashboards), Marked + Mermaid (markdown answers), DOMPurify, pdfjs-dist + mammoth (original PDF/Word citation preview).
 
 **Build for production:**
 
@@ -725,6 +732,49 @@ Manual UI checks:
 - [ ] Add or select a datasource (Pagila sample)  
 - [ ] Ask a question in **Talk to Data**  
 - [ ] Create a collection, upload a PDF, ask in **Talk to Docs**  
+- [ ] Open **Admin** on a collection — verify document list, version badges, chunk browser  
+- [ ] Click a citation → switch **Original document** — PDF page highlight or Word excerpt highlight  
+
+---
+
+## 12.1 Talk to Docs — versioning, metadata, and admin
+
+After `uv run alembic upgrade head` (migration `0012_document_versioning`), Talk to Docs stores enterprise metadata and supports document versions.
+
+### Versioning behavior
+
+| Event | Result |
+|-------|--------|
+| First upload of `report.pdf` | Version 1, `is_current=true`, indexed in Qdrant |
+| Re-upload same filename, new content | Old version superseded (`is_current=false`); new version indexed; search uses current only |
+| Re-upload identical bytes (same SHA-256) | Skipped — no duplicate index |
+
+Original files are kept on disk under `uploads/{tenant_id}/{collection_id}/` and linked from Postgres (`documents.storage_path`).
+
+### Enterprise metadata (`metadata_json`)
+
+Each document stores structured fields including: `document_type`, `tags`, `source`, `extractor_used`, `confidence`, `graph_sync_status`, `version_number`, `content_hash`, `mime_type`, `file_size_bytes`, `page_count`, `indexed_at`, and `confidentiality` (default `internal`). Optional upload fields: **Document type** and **Tags** in the sidebar.
+
+### Admin UI
+
+In **Talk to Docs**, select a collection → **Admin**:
+
+- **Overview** — document/chunk counts, embedding model, vector estimate  
+- **Documents** — all versions, status, hash, size, metadata; expand **Version history** per registry  
+- **Chunks** — searchable chunk list with page, char offsets, Qdrant point id, bbox/highlight metadata  
+
+REST endpoints (Swagger: `/docs`): `GET /talk-to-docs/collections/{id}/admin/summary`, `.../admin/documents`, `.../admin/chunks`, `GET /talk-to-docs/documents/registry/{registry_id}/versions`.
+
+### Citation preview modes
+
+When answering, citations include `view_modes`:
+
+- **`extracted`** — markdown text from the vector index (default)  
+- **`original_pdf`** / **`original_word`** — rendered original file with highlights when stored at upload  
+
+PDF highlights use bounding boxes from PyMuPDF structured extraction. Word highlights match the cited text snippet in converted HTML.
+
+For low-level vector/payload inspection, use the **Qdrant dashboard**: http://localhost:6333/dashboard
 
 ---
 
@@ -735,7 +785,9 @@ Manual UI checks:
 | `connection refused` on 5432 | Start Postgres: `docker compose up -d postgres` |
 | Alembic migration fails | DB reachable? URL correct? User can create tables? |
 | 401 on all API calls | Clear browser `localStorage`; re-login; check JWT env in non-dev |
-| Talk to Docs empty / errors | Qdrant running? Documents ingested? Check gateway logs |
+| Talk to Docs empty / errors | Qdrant running? Documents ingested? Run `uv run alembic upgrade head` for versioning schema |
+| Scrape fails at indexing | Large sites (e.g. docs.crewai.com × 100 pages) need the web-scrape chunker (auto). Ensure Qdrant is up; check job error for the failing URL. Run `uv run alembic upgrade head` if DB columns are missing |
+| Original preview unavailable | Re-upload PDF/DOCX after upgrade so `storage_path` is populated; only file uploads store originals |
 | LLM "not available" | Set `OPENAI_API_KEY`; restart uvicorn |
 | Rate limit 429 | Start Redis or set `INSIGHTIQ_RATE_LIMIT__ENABLED=false` |
 | Pagila not found | Run `./scripts/load_pagila_sample_db.sh` (Git Bash on Windows) — see **§ Windows setup** |

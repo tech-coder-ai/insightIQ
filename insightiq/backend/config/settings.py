@@ -25,6 +25,8 @@ class DatabaseSettings(BaseModel):
 
 class QdrantSettings(BaseModel):
     url: str = "http://localhost:6333"
+    timeout_seconds: int = 120
+    upsert_batch_size: int = 64
 
 
 class Neo4jSettings(BaseModel):

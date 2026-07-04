@@ -35,6 +35,7 @@ from core.rag.profiles import load_profile
 from core.request_context import RequestContext, require_auth, require_role
 from core.retrieval.qdrant_store import QdrantStore
 from core.types import Role
+from core.documents.versioning import guess_mime_type
 
 router = APIRouter(prefix="/talk-to-docs", tags=["talk-to-docs"])
 
@@ -48,8 +49,16 @@ class CollectionResponse(BaseModel):
 
 class DocumentResponse(BaseModel):
     id: uuid.UUID
+    registry_id: uuid.UUID
     filename: str
     has_content: bool
+    version_number: int
+    is_current: bool
+    status: str
+    content_hash: str | None = None
+    mime_type: str | None = None
+    chunk_count: int = 0
+    has_original: bool = False
     created_at: str
 
 
@@ -75,6 +84,12 @@ class ChunkDetailResponse(BaseModel):
     char_end: int
     text: str
     excerpt: str
+    version_number: int | None = None
+    mime_type: str | None = None
+    has_original: bool = False
+    highlight_regions: list | None = None
+    bbox_json: dict | None = None
+    view_modes: list[str] = Field(default_factory=lambda: ["extracted"])
 
 
 class DocumentViewResponse(BaseModel):
@@ -84,6 +99,11 @@ class DocumentViewResponse(BaseModel):
     highlight_start: int | None = None
     highlight_end: int | None = None
     page_number: int | None = None
+    mime_type: str | None = None
+    has_original: bool = False
+    version_number: int | None = None
+    highlight_regions: list | None = None
+    view_modes: list[str] = Field(default_factory=lambda: ["extracted"])
 
 
 class AskDocsResponse(BaseModel):
@@ -153,8 +173,16 @@ async def list_documents(
     return [
         DocumentResponse(
             id=d.id,
+            registry_id=d.registry_id,
             filename=d.filename,
             has_content=bool((d.content_markdown or "").strip()),
+            version_number=d.version_number,
+            is_current=d.is_current,
+            status=d.status,
+            content_hash=d.content_hash,
+            mime_type=d.mime_type,
+            chunk_count=await _chunk_count_for_doc(db, d.id),
+            has_original=bool(d.storage_path and Path(d.storage_path).exists()),
             created_at=d.created_at.isoformat(),
         )
         for d in res.scalars().all()
@@ -241,6 +269,8 @@ async def upload_document(
         embedding_model=col.embedding_model,
         metadata=metadata or None,
         rag_profile=col.rag_profile,
+        mime_type=guess_mime_type(file.filename or "upload", file.content_type),
+        ingested_by=ctx.user_id,
     )
     return job
 
@@ -266,6 +296,7 @@ async def scrape_url(
         tenant_id=str(ctx.tenant_id),
         embedding_model=col.embedding_model,
         rag_profile=col.rag_profile,
+        ingested_by=ctx.user_id,
     )
     return job
 
@@ -302,6 +333,12 @@ async def get_chunk_detail(
         char_end=chunk.char_end,
         text=text,
         excerpt=excerpt,
+        version_number=chunk.version_number or doc.version_number,
+        mime_type=doc.mime_type,
+        has_original=_has_original(doc),
+        highlight_regions=chunk.highlight_regions,
+        bbox_json=chunk.bbox_json,
+        view_modes=_view_modes_for_doc(doc),
     )
 
 
@@ -324,6 +361,21 @@ async def get_document_view(
         if highlight_end <= highlight_start:
             highlight_start = None
             highlight_end = None
+    highlight_regions: list | None = None
+    if highlight_start is not None and highlight_end is not None:
+        res = await db.execute(
+            select(DocumentChunk).where(
+                DocumentChunk.document_id == doc.id,
+                DocumentChunk.tenant_id == ctx.tenant_id,
+                DocumentChunk.char_start <= highlight_start,
+                DocumentChunk.char_end >= highlight_end,
+            )
+        )
+        chunk = res.scalar_one_or_none()
+        if chunk is not None:
+            highlight_regions = chunk.highlight_regions
+            if page_number is None:
+                page_number = chunk.page_number
     return DocumentViewResponse(
         document_id=doc.id,
         filename=doc.filename,
@@ -331,6 +383,11 @@ async def get_document_view(
         highlight_start=highlight_start,
         highlight_end=highlight_end,
         page_number=page_number,
+        mime_type=doc.mime_type,
+        has_original=_has_original(doc),
+        version_number=doc.version_number,
+        highlight_regions=highlight_regions,
+        view_modes=_view_modes_for_doc(doc),
     )
 
 
@@ -502,7 +559,7 @@ async def _enrich_highlights(
         if parsed_pair is not None:
             composite_pairs.append(parsed_pair)
 
-    meta: dict[str, tuple[str, str, int | None]] = {}
+    meta: dict[str, dict[str, object]] = {}
 
     if db_ids:
         res = await db.execute(
@@ -530,11 +587,16 @@ async def _enrich_highlights(
         row = dict(item)
         chunk_id = str(row.get("chunk_id", ""))
         if chunk_id in meta:
-            filename, text, page_number = meta[chunk_id]
-            row.setdefault("filename", filename)
-            row.setdefault("page_number", page_number)
+            info = meta[chunk_id]
+            row.setdefault("filename", info["filename"])
+            row.setdefault("page_number", info["page_number"])
+            row.setdefault("mime_type", info["mime_type"])
+            row.setdefault("has_original", info["has_original"])
+            row.setdefault("version_number", info["version_number"])
+            row.setdefault("highlight_regions", info["highlight_regions"])
+            row.setdefault("view_modes", info["view_modes"])
             if not row.get("text_snippet"):
-                snippet = text.replace("\n", " ")
+                snippet = str(info["text"]).replace("\n", " ")
                 row["text_snippet"] = snippet[:280] + ("..." if len(snippet) > 280 else "")
         enriched.append(row)
     return enriched
@@ -557,13 +619,53 @@ def _parse_chunk_key(chunk_id: str) -> tuple[uuid.UUID | None, tuple[uuid.UUID, 
 
 
 def _store_chunk_meta(
-    meta: dict[str, tuple[str, str, int | None]],
+    meta: dict[str, dict[str, object]],
     chunk: DocumentChunk,
     doc: Document,
 ) -> None:
-    info = (doc.filename, chunk.text.strip(), chunk.page_number)
+    info = {
+        "filename": doc.filename,
+        "text": chunk.text.strip(),
+        "page_number": chunk.page_number,
+        "mime_type": doc.mime_type,
+        "has_original": _has_original(doc),
+        "version_number": chunk.version_number or doc.version_number,
+        "highlight_regions": chunk.highlight_regions or [],
+        "view_modes": _view_modes_for_doc(doc),
+    }
     meta[str(chunk.id)] = info
     meta[f"{chunk.document_id}:{chunk.chunk_index}"] = info
+
+
+def _has_original(doc: Document) -> bool:
+    return bool(doc.storage_path and Path(doc.storage_path).exists())
+
+
+def _view_modes_for_doc(doc: Document) -> list[str]:
+    modes = ["extracted"]
+    if not _has_original(doc):
+        return modes
+    mime = (doc.mime_type or "").lower()
+    name = doc.filename.lower()
+    if mime == "application/pdf" or name.endswith(".pdf"):
+        modes.append("original_pdf")
+    if (
+        mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        or name.endswith(".docx")
+        or mime == "application/msword"
+        or name.endswith(".doc")
+    ):
+        modes.append("original_word")
+    return modes
+
+
+async def _chunk_count_for_doc(db: AsyncSession, document_id: uuid.UUID) -> int:
+    from sqlalchemy import func
+
+    res = await db.execute(
+        select(func.count()).select_from(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    )
+    return int(res.scalar_one())
 
 
 async def _resolve_chunk_row(

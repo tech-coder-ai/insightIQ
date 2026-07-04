@@ -109,6 +109,26 @@ class MarkdownAwareChunker(IChunker):
                 if (section.end - section.start) > self._max_parent
                 else section.end
             )
+
+            if len(section_text) <= self._child_size:
+                raw_chunk = section_text.strip("\n")
+                if raw_chunk.strip():
+                    chunks.append(
+                        {
+                            "chunk_id": f"{document_id}:{idx}",
+                            "document_id": document_id,
+                            "text": raw_chunk,
+                            "char_start": section.start,
+                            "char_end": section.end,
+                            "page_number": None,
+                            "chunk_index": idx,
+                            "parent_char_start": section.start,
+                            "parent_char_end": parent_end,
+                        }
+                    )
+                    idx += 1
+                continue
+
             protected = [
                 _Span(s.start - section.start, s.end - section.start)
                 for s in _protected_spans(section_text)
@@ -151,3 +171,12 @@ class MarkdownAwareChunker(IChunker):
                 local_start = max(local_end - self._overlap, local_start + 1)
 
         return chunks
+
+
+@CHUNKERS.register("web_scrape")
+class WebScrapeChunker(MarkdownAwareChunker):
+    """Larger chunks for crawled HTML — doc sites (e.g. changelogs) can produce
+    very long markdown; the default child_size would explode vector counts."""
+
+    def __init__(self) -> None:
+        super().__init__(child_size=1400, child_overlap=120, max_parent_size=3600)

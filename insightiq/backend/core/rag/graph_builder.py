@@ -5,6 +5,8 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from core.rag.nodes import (
+    _chunks_from_dict,
+    _top_retrieval_score,
     node_clarify,
     node_critic,
     node_curate,
@@ -114,9 +116,15 @@ def build_graph(cfg: RagProfileConfig):
 
         def after_critic(state: dict[str, Any]) -> str:
             critic_result = state.get("critic") or {}
+            chunks = _chunks_from_dict((state.get("context") or {}).get("chunks", []))
+            top_score = _top_retrieval_score(chunks)
             if not critic_result.get("pass_") and state.get("retrieval_round", 0) < max_rounds:
                 return "retry"
-            if not critic_result.get("pass_") and critic_result.get("confidence", 1.0) < 0.5:
+            if (
+                not critic_result.get("pass_")
+                and critic_result.get("confidence", 1.0) < 0.5
+                and not (chunks and top_score >= 0.35)
+            ):
                 return "clarify"
             return "highlight"
 

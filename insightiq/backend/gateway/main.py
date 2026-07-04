@@ -22,6 +22,7 @@ from services.prompt_studio.api import router as prompt_studio_router
 from services.reports.api import router as reports_router
 from services.talk_to_data.api import router as talk_to_data_router
 from services.talk_to_docs.api import router as talk_to_docs_router
+from services.talk_to_docs.admin import router as talk_to_docs_admin_router
 
 settings = get_settings_resolver().resolve()
 
@@ -62,6 +63,7 @@ app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(talk_to_data_router)
 app.include_router(talk_to_docs_router)
+app.include_router(talk_to_docs_admin_router)
 app.include_router(dashboards_router)
 app.include_router(dashboards_public_router)
 app.include_router(prompt_studio_router)

@@ -108,11 +108,22 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    registry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     filename: Mapped[str] = mapped_column(String(500))
     content_markdown: Mapped[str] = mapped_column(Text(), default="")
     metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    version_number: Mapped[int] = mapped_column(default=1)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    file_size_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    page_count: Mapped[int | None] = mapped_column(nullable=True)
+    ingested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    superseded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -133,6 +144,9 @@ class DocumentChunk(Base):
     # child chunk belongs to, sliced on demand from Document.content_markdown.
     parent_char_start: Mapped[int | None] = mapped_column(nullable=True)
     parent_char_end: Mapped[int | None] = mapped_column(nullable=True)
+    bbox_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    highlight_regions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    version_number: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class Dashboard(Base):

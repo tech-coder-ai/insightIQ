@@ -10,8 +10,16 @@ from pydantic import BaseModel, Field
 
 import core.ingestion.chunkers.markdown_aware  # noqa: F401 — register chunker
 import core.ingestion.chunkers.recursive  # noqa: F401 — register chunker (legacy/tests)
+from core.documents.versioning import (
+    build_enterprise_metadata,
+    compute_content_hash,
+    resolve_document_version,
+    supersede_document,
+)
 from core.ingestion.chunkers.factory import CHUNKERS
-from core.ingestion.pipeline_router import extract_document
+from core.ingestion.pipeline_router import ExtractionResult, extract_document
+from core.ingestion.span_mapper import assign_chunk_highlight_metadata
+from core.ingestion.html_sanitize import sanitize_scraped_html
 from core.ingestion.web_scraper import crawl
 from core.models import Document, DocumentChunk
 from core.retrieval.bm25_index import invalidate_bm25_cache
@@ -80,6 +88,9 @@ def _set(job: IngestionJob, *, stage: str, detail: str) -> None:
 
 
 _GRAPH_ENABLED_PROFILES = {"graph", "agentic"}
+_MAX_GRAPH_SYNC_CHUNKS = 40
+_SCRAPE_CHUNKER = "web_scrape"
+_DEFAULT_CHUNKER = "markdown_aware"
 
 
 async def _sync_chunks_to_graph(
@@ -94,7 +105,7 @@ async def _sync_chunks_to_graph(
 
         store = Neo4jStore()
         synced_any = False
-        for c in chunks:
+        for c in chunks[:_MAX_GRAPH_SYNC_CHUNKS]:
             extraction = await extract_entities(c["text"])
             if not extraction.entities:
                 continue
@@ -128,20 +139,58 @@ async def _index_markdown(
     confidence: float,
     metadata: dict[str, Any] | None = None,
     rag_profile: str = "standard",
+    storage_path: str | None = None,
+    mime_type: str | None = None,
+    file_size_bytes: int | None = None,
+    page_count: int | None = None,
+    text_spans: list[dict[str, Any]] | None = None,
+    ingested_by: uuid.UUID | None = None,
+    source: str = "upload",
 ) -> dict[str, Any]:
-    """Chunk, embed/index, and persist a single document. Returns a summary dict."""
+    """Chunk, embed/index, and persist a single document version."""
+    content_hash = compute_content_hash(markdown)
+    registry_id, version_number, current_doc, skip_index = await resolve_document_version(
+        session,
+        tenant_id=uuid.UUID(tenant_id),
+        collection_id=uuid.UUID(collection_id),
+        filename=filename,
+        content_hash=content_hash,
+    )
+    if skip_index and current_doc is not None:
+        return {
+            "document_id": str(current_doc.id),
+            "registry_id": str(current_doc.registry_id),
+            "filename": filename,
+            "chunks": await _chunk_count(session, current_doc.id),
+            "version_number": current_doc.version_number,
+            "skipped": True,
+            "message": "Document unchanged — current version already indexed.",
+        }
+
+    if current_doc is not None:
+        await supersede_document(
+            session,
+            store,
+            tenant_id=uuid.UUID(tenant_id),
+            collection_id=collection_id,
+            current=current_doc,
+        )
+
     doc_id = uuid.uuid4()
-    # Layout-aware chunking with parent-child offsets (RAG principles 1 & 2).
-    chunks = CHUNKERS.create("markdown_aware").chunk(markdown, document_id=str(doc_id))
+    chunker_key = _SCRAPE_CHUNKER if source == "scrape" else _DEFAULT_CHUNKER
+    chunks = CHUNKERS.create(chunker_key).chunk(markdown, document_id=str(doc_id))
+    assign_chunk_highlight_metadata(chunks, text_spans or [])
 
     document_type = (metadata or {}).get("document_type")
     tags = (metadata or {}).get("tags") or []
-    if document_type or tags:
-        for c in chunks:
-            if document_type:
-                c["document_type"] = document_type
-            if tags:
-                c["tags"] = tags
+    for c in chunks:
+        c["is_current"] = True
+        c["version_number"] = version_number
+        c["registry_id"] = str(registry_id)
+        if document_type:
+            c["document_type"] = document_type
+        if tags:
+            c["tags"] = tags
 
     await store.upsert_chunks(
         collection_id,
@@ -157,20 +206,36 @@ async def _index_markdown(
             chunks, tenant_id=tenant_id, collection_id=collection_id, document_id=str(doc_id)
         )
 
-    doc_metadata = {
-        "extractor_used": extractor_used,
-        "confidence": confidence,
-        "graph_sync_status": graph_sync_status,
-        **(metadata or {}),
-    }
+    doc_metadata = build_enterprise_metadata(
+        base=metadata,
+        source=source,
+        extractor_used=extractor_used,
+        confidence=confidence,
+        graph_sync_status=graph_sync_status,
+        version_number=version_number,
+        content_hash=content_hash,
+        mime_type=mime_type,
+        file_size_bytes=file_size_bytes,
+        page_count=page_count,
+    )
     session.add(
         Document(
             id=doc_id,
+            registry_id=registry_id,
             collection_id=uuid.UUID(collection_id),
             tenant_id=uuid.UUID(tenant_id),
             filename=filename,
             content_markdown=markdown,
             metadata_json=doc_metadata,
+            version_number=version_number,
+            is_current=True,
+            storage_path=storage_path,
+            mime_type=mime_type,
+            content_hash=content_hash,
+            status="active",
+            file_size_bytes=file_size_bytes,
+            page_count=page_count,
+            ingested_by=ingested_by,
         )
     )
     for c in chunks:
@@ -187,9 +252,29 @@ async def _index_markdown(
                 qdrant_point_id=c.get("qdrant_point_id"),
                 parent_char_start=c.get("parent_char_start"),
                 parent_char_end=c.get("parent_char_end"),
+                bbox_json=c.get("bbox_json"),
+                highlight_regions=c.get("highlight_regions"),
+                version_number=version_number,
             )
         )
-    return {"document_id": str(doc_id), "filename": filename, "chunks": len(chunks)}
+    return {
+        "document_id": str(doc_id),
+        "registry_id": str(registry_id),
+        "filename": filename,
+        "chunks": len(chunks),
+        "version_number": version_number,
+        "content_hash": content_hash,
+        "skipped": False,
+    }
+
+
+async def _chunk_count(session: Any, document_id: uuid.UUID) -> int:
+    from sqlalchemy import func, select
+
+    res = await session.execute(
+        select(func.count()).select_from(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    )
+    return int(res.scalar_one())
 
 
 async def run_file_ingestion(
@@ -202,18 +287,21 @@ async def run_file_ingestion(
     embedding_model: str,
     metadata: dict[str, Any] | None = None,
     rag_profile: str = "standard",
+    mime_type: str | None = None,
+    ingested_by: uuid.UUID | None = None,
 ) -> None:
     from core.deps import get_app_sessionmaker
 
     job = _JOBS[job_id]
     try:
         _set(job, stage=STAGE_EXTRACTING, detail=f"Extracting text from {filename}…")
-        markdown, extractor_used, confidence = await extract_document(file_path)
-        if not markdown.strip():
+        extraction = await extract_document(file_path)
+        if not extraction.markdown.strip():
             raise ValueError("no readable text could be extracted from this file")
 
         _set(job, stage=STAGE_CHUNKING, detail="Splitting into chunks…")
         store = QdrantStore()
+        file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
 
         _set(job, stage=STAGE_INDEXING, detail="Generating embeddings and indexing…")
         sessionmaker = get_app_sessionmaker()
@@ -221,15 +309,22 @@ async def run_file_ingestion(
             summary = await _index_markdown(
                 session,
                 store,
-                markdown=markdown,
+                markdown=extraction.markdown,
                 filename=filename,
                 collection_id=collection_id,
                 tenant_id=tenant_id,
                 embedding_model=embedding_model,
-                extractor_used=extractor_used,
-                confidence=confidence,
+                extractor_used=extraction.extractor_used,
+                confidence=extraction.confidence,
                 metadata=metadata,
                 rag_profile=rag_profile,
+                storage_path=file_path,
+                mime_type=mime_type,
+                file_size_bytes=file_size,
+                page_count=extraction.page_count,
+                text_spans=extraction.text_spans,
+                ingested_by=ingested_by,
+                source="upload",
             )
             _set(job, stage=STAGE_SAVING, detail="Saving to database…")
             await session.commit()
@@ -238,7 +333,14 @@ async def run_file_ingestion(
         job.progress_current = 1
         job.progress_total = 1
         job.status = "completed"
-        _set(job, stage=STAGE_COMPLETED, detail=f"Indexed {summary['chunks']} chunks.")
+        if summary.get("skipped"):
+            _set(job, stage=STAGE_COMPLETED, detail=str(summary.get("message", "Already up to date.")))
+        else:
+            _set(
+                job,
+                stage=STAGE_COMPLETED,
+                detail=f"Indexed v{summary['version_number']} — {summary['chunks']} chunks.",
+            )
     except Exception as exc:  # noqa: BLE001 - report the failing stage to the UI
         job.status = "failed"
         job.error = f"{type(exc).__name__}: {exc}"
@@ -254,6 +356,7 @@ async def run_scrape_ingestion(
     tenant_id: str,
     embedding_model: str,
     rag_profile: str = "standard",
+    ingested_by: uuid.UUID | None = None,
 ) -> None:
     from core.deps import get_app_sessionmaker
 
@@ -275,46 +378,62 @@ async def run_scrape_ingestion(
         summaries: list[dict[str, Any]] = []
         job.progress_total = len(pages)
 
+        failures: list[str] = []
         async with sessionmaker() as session:
             for idx, (page_url, html) in enumerate(pages, start=1):
                 _set(job, stage=STAGE_EXTRACTING, detail=f"Processing {page_url} ({idx}/{len(pages)})…")
+                cleaned_html = sanitize_scraped_html(html)
                 with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as tmp:
-                    tmp.write(html)
+                    tmp.write(cleaned_html)
                     tmp_path = tmp.name
                 try:
-                    markdown, extractor_used, confidence = await extract_document(tmp_path)
+                    extraction = await extract_document(tmp_path)
                 finally:
                     Path(tmp_path).unlink(missing_ok=True)
 
-                if not markdown.strip():
+                if not extraction.markdown.strip():
                     continue
 
-                _set(job, stage=STAGE_INDEXING, detail=f"Indexing {page_url} ({idx}/{len(pages)})…")
-                summary = await _index_markdown(
-                    session,
-                    store,
-                    markdown=markdown,
-                    filename=page_url,
-                    collection_id=collection_id,
-                    tenant_id=tenant_id,
-                    embedding_model=embedding_model,
-                    extractor_used=extractor_used,
-                    confidence=confidence,
-                    rag_profile=rag_profile,
-                )
-                summaries.append(summary)
-                job.progress_current = idx
-
-            _set(job, stage=STAGE_SAVING, detail="Saving to database…")
-            await session.commit()
+                _set(job, stage=STAGE_INDEXING, detail=f"Embedding page {idx}/{len(pages)}…")
+                try:
+                    summary = await _index_markdown(
+                        session,
+                        store,
+                        markdown=extraction.markdown,
+                        filename=page_url,
+                        collection_id=collection_id,
+                        tenant_id=tenant_id,
+                        embedding_model=embedding_model,
+                        extractor_used=extraction.extractor_used,
+                        confidence=extraction.confidence,
+                        metadata={"source": "scrape", "source_url": page_url},
+                        rag_profile=rag_profile,
+                        mime_type="text/html",
+                        page_count=extraction.page_count,
+                        text_spans=extraction.text_spans,
+                        ingested_by=ingested_by,
+                        source="scrape",
+                    )
+                    await session.commit()
+                    summaries.append(summary)
+                    job.progress_current = idx
+                except Exception as exc:  # noqa: BLE001 - continue other pages; report below
+                    await session.rollback()
+                    failures.append(f"{page_url}: {type(exc).__name__}: {exc}")
 
         if not summaries:
-            raise ValueError("pages were fetched but contained no extractable text")
+            hint = failures[0] if failures else "no extractable text"
+            raise ValueError(f"scrape indexing failed — {hint}")
 
         job.documents = summaries
         total_chunks = sum(s["chunks"] for s in summaries)
         job.status = "completed"
-        _set(job, stage=STAGE_COMPLETED, detail=f"Indexed {len(summaries)} page(s), {total_chunks} chunks.")
+        detail = f"Indexed {len(summaries)} page(s), {total_chunks} chunks."
+        if failures:
+            detail += f" {len(failures)} page(s) failed."
+        _set(job, stage=STAGE_COMPLETED, detail=detail)
+        if failures:
+            job.error = "; ".join(failures[:3]) + ("…" if len(failures) > 3 else "")
     except Exception as exc:  # noqa: BLE001 - report the failing stage to the UI
         job.status = "failed"
         job.error = f"{type(exc).__name__}: {exc}"

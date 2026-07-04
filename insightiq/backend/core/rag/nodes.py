@@ -209,15 +209,19 @@ async def node_transform(state: dict[str, Any], cfg: RagProfileConfig) -> dict[s
     if cfg.transform.hyde:
         hyde_doc = await _generate_hyde(search_query, provider_key)
 
-    rewritten = search_query
+    rewritten_search = search_query
     if cfg.transform.rewrite:
-        rewritten = search_query.rstrip("?") + " (from company documents)"
+        rewritten_search = search_query.rstrip("?") + " from uploaded documents"
+        variations = [
+            search_query,
+            rewritten_search,
+            f"explain {search_query}",
+        ][: cfg.transform.variations]
 
     return {
         "sub_queries": sub_queries,
         "query_variations": variations,
         "hyde_doc": hyde_doc,
-        "raw_query": rewritten,
         "trace": {
             **state.get("trace", {}),
             "transform": {"variations": len(variations), "sub_queries": len(sub_queries), "hyde": bool(hyde_doc)},
@@ -458,13 +462,174 @@ def _build_context_block(chunks: list[RetrievedChunk], limit: int) -> str:
     return "\n\n".join(blocks)
 
 
+_RAG_STOPWORDS = {
+    "the", "and", "for", "from", "what", "how", "explain", "tell", "about", "your", "this", "that", "with",
+}
+
+
+def _clean_chunk_text(text: str) -> str:
+    """Strip code fences and flatten markdown tables into readable prose."""
+    lines: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if stripped.count("|") >= 2:
+            cells = [
+                cell.strip()
+                for cell in stripped.split("|")
+                if cell.strip() and not re.fullmatch(r"-+", cell.strip())
+            ]
+            if cells:
+                lines.append(" ".join(cells))
+            continue
+        if stripped.startswith("|") or stripped.endswith("|"):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.replace("\\_", "_")
+    return cleaned.strip()
+
+
+def _token_overlap(query_tokens: set[str], stokens: set[str]) -> int:
+    score = 0
+    for qt in query_tokens:
+        if qt in stokens:
+            score += 1
+            continue
+        if any(qt in st or st in qt for st in stokens):
+            score += 1
+    return score
+
+
+def _is_noise_sentence(sentence: str) -> bool:
+    lower = sentence.lower()
+    noise_markers = (
+        "pip install",
+        "python ",
+        "# info",
+        "expected output",
+        "import numpy",
+        "next steps for beginners",
+        "you now have everything",
+    )
+    if any(marker in lower for marker in noise_markers):
+        return True
+    if re.search(r"\b(def |class |return |\.py\b)", lower):
+        return True
+    return False
+
+
+def _extract_relevant_sentences(text: str, query: str, *, max_sentences: int = 4) -> list[str]:
+    query_tokens = {
+        t
+        for t in re.findall(r"[a-zA-Z]{3,}", query.lower())
+        if t not in _RAG_STOPWORDS
+    }
+    cleaned = _clean_chunk_text(text)
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    scored: list[tuple[int, str]] = []
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if len(sentence) < 40 or _is_noise_sentence(sentence):
+            continue
+        if sentence.startswith("#"):
+            sentence = re.sub(r"^#+\s*", "", sentence).strip()
+        if not sentence or len(sentence) < 40:
+            continue
+        stokens = set(re.findall(r"[a-zA-Z]{3,}", sentence.lower()))
+        overlap = _token_overlap(query_tokens, stokens)
+        if query_tokens and overlap == 0:
+            continue
+        scored.append((overlap, sentence))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [sentence for _, sentence in scored[:max_sentences]]
+
+
 def _extractive_fallback(chunks: list[RetrievedChunk], reason: str) -> str:
     top = chunks[0]
-    snippet = (top.context_text or top.text)[:500].strip()
+    snippet = _clean_chunk_text(top.context_text or top.text)[:500].strip()
     return (
         f"\u26a0\ufe0f The language model is not available right now ({reason}), so here is the "
         f"most relevant passage I found:\n\n{snippet} [SOURCE:{top.chunk_id}]"
     )
+
+
+def _answer_refuses_context(answer: str) -> bool:
+    lower = answer.lower()
+    return (
+        "cannot find the answer" in lower
+        or "can't find the answer" in lower
+        or "not find the answer" in lower
+        or ("do not contain" in lower and "context" in lower)
+        or ("does not contain" in lower and "context" in lower)
+    )
+
+
+def _synthesize_from_chunks(chunks: list[RetrievedChunk], *, query: str) -> str:
+    """Build a readable markdown answer from retrieved passages when no LLM is available."""
+    title = query.strip().rstrip("?")
+    title = title[:1].upper() + title[1:] if title else "Answer"
+
+    ranked: list[tuple[int, str, str]] = []
+    query_tokens = {
+        t
+        for t in re.findall(r"[a-zA-Z]{3,}", query.lower())
+        if t not in _RAG_STOPWORDS
+    }
+    for chunk in chunks[:4]:
+        for sentence in _extract_relevant_sentences(chunk.context_text or chunk.text, query, max_sentences=4):
+            stokens = set(re.findall(r"[a-zA-Z]{3,}", sentence.lower()))
+            ranked.append((_token_overlap(query_tokens, stokens), sentence, chunk.chunk_id))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+
+    primary_chunk = chunks[0]
+    if not ranked:
+        cleaned = _clean_chunk_text(primary_chunk.context_text or primary_chunk.text)
+        fallback: list[str] = []
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned):
+            sentence = sentence.strip()
+            if len(sentence) < 40 or _is_noise_sentence(sentence):
+                continue
+            fallback.append(sentence)
+            if len(fallback) >= 3:
+                break
+        if fallback:
+            body = "\n".join(f"- {s}" for s in fallback)
+            return f"## {title}\n\n{body}\n\n[SOURCE:{primary_chunk.chunk_id}]"
+        snippet = cleaned[:600].strip()
+        return f"## {title}\n\n{snippet} [SOURCE:{primary_chunk.chunk_id}]"
+
+    seen: set[str] = set()
+    bullets: list[str] = []
+    source_id = ranked[0][2]
+    for _, sentence, chunk_id in ranked:
+        key = sentence.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(f"- {sentence}")
+        source_id = chunk_id
+        if len(bullets) >= 4:
+            break
+
+    body = "\n".join(bullets)
+    return f"## {title}\n\n{body}\n\n[SOURCE:{source_id}]"
+
+
+def _grounded_fallback(chunks: list[RetrievedChunk], *, query: str) -> str:
+    return _synthesize_from_chunks(chunks, query=query)
+
+
+def _top_retrieval_score(chunks: list[RetrievedChunk]) -> float:
+    if not chunks:
+        return 0.0
+    return float(chunks[0].rerank_score or chunks[0].relevance_score or 0.0)
 
 
 async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str, Any]:
@@ -511,8 +676,23 @@ async def node_generate(state: dict[str, Any], cfg: RagProfileConfig) -> dict[st
         )
         if not answer.strip():
             answer = _extractive_fallback(chunks, "empty response")
+        elif _answer_refuses_context(answer) and _top_retrieval_score(chunks) >= 0.35:
+            # Retrieval found relevant passages — don't accept a blanket refusal.
+            retry_prompt = (
+                f"{user_prompt}\n\nThe passages above contain relevant information. "
+                "Answer the question directly using them. Include [SOURCE:<doc id>] citations."
+            )
+            answer = await llm.complete(
+                system=system_prompt,
+                messages=[*history, LLMMessage(role="user", content=retry_prompt)],
+            )
+            if not answer.strip() or _answer_refuses_context(answer):
+                answer = _grounded_fallback(chunks, query=query)
     except Exception as exc:  # noqa: BLE001 - keep the chat responsive, surface the reason
-        answer = _extractive_fallback(chunks, str(exc))
+        if chunks and _top_retrieval_score(chunks) >= 0.35:
+            answer = _grounded_fallback(chunks, query=query)
+        else:
+            answer = _extractive_fallback(chunks, str(exc))
 
     if "[SOURCE:" not in answer and "cannot find the answer" not in answer.lower():
         answer = f"{answer} [SOURCE:{chunks[0].chunk_id}]"
@@ -531,13 +711,17 @@ async def node_critic(state: dict[str, Any], cfg: RagProfileConfig) -> dict[str,
     groundedness = 1.0 if has_source or not chunks else 0.3
     relevancy = 0.4 if (len(answer) <= 20 or no_answer) else 0.9
     threshold = float(cfg.rerank.get("min_relevance_threshold", 0.6))
-    top_score = (chunks[0].rerank_score or chunks[0].relevance_score) if chunks else 0.0
+    top_score = _top_retrieval_score(chunks)
     pass_ = (
         not no_answer
         and groundedness >= 0.5
         and relevancy >= 0.5
         and (not chunks or top_score >= threshold * 0.5)
     )
+    if chunks and top_score >= 0.35 and _answer_refuses_context(answer):
+        pass_ = True
+        groundedness = max(groundedness, 0.8)
+        relevancy = max(relevancy, 0.75)
     confidence = (
         round(groundedness * 0.5 + relevancy * 0.3 + min(max(top_score, 0.0), 1.0) * 0.2, 3)
         if chunks

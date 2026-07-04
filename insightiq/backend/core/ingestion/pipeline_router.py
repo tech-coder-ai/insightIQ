@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import dataclass, field
+from typing import Any
 
 from core.ingestion.extractors.factory import EXTRACTORS
+
+
+@dataclass
+class ExtractionResult:
+    markdown: str
+    extractor_used: str
+    confidence: float
+    text_spans: list[dict[str, Any]] = field(default_factory=list)
+    page_count: int | None = None
 
 
 def route_extraction(file_path: str) -> str:
@@ -13,9 +24,25 @@ def route_extraction(file_path: str) -> str:
     return "markitdown"
 
 
-async def extract_document(file_path: str) -> tuple[str, str, float]:
-    key = route_extraction(file_path)
+async def extract_document(file_path: str) -> ExtractionResult:
     lower = file_path.lower()
+    if lower.endswith(".pdf"):
+        try:
+            from core.ingestion.extractors.pdf_structured import extract_pdf_structured
+
+            markdown, spans, page_count, confidence = extract_pdf_structured(file_path)
+            if markdown.strip():
+                return ExtractionResult(
+                    markdown=markdown,
+                    extractor_used="pdf_structured",
+                    confidence=confidence,
+                    text_spans=spans,
+                    page_count=page_count,
+                )
+        except Exception:  # noqa: BLE001 - fall back to generic extractors
+            pass
+
+    key = route_extraction(file_path)
     try:
         importlib.import_module("core.ingestion.extractors.markitdown")
         importlib.import_module("core.ingestion.extractors.ocr_pdf")
@@ -38,4 +65,4 @@ async def extract_document(file_path: str) -> tuple[str, str, float]:
     if confidence < 0.55:
         extractor = EXTRACTORS.create("unstructured")
         text, confidence = await extractor.extract(file_path)
-    return text, extractor.name, confidence
+    return ExtractionResult(markdown=text, extractor_used=extractor.name, confidence=confidence)

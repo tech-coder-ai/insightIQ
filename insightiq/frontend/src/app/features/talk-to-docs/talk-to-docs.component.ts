@@ -10,8 +10,16 @@ import { MarkdownDirective } from '../../core/markdown.directive';
 import { ToastService } from '../../core/toast.service';
 import { IconComponent } from '../../shared/icon.component';
 import { PromptPickerComponent } from '../../shared/prompt-picker.component';
+import { DocumentAdminPanelComponent } from '../../shared/document-admin-panel.component';
+import { OriginalDocumentViewerComponent } from '../../shared/original-document-viewer.component';
 
 type Collection = { id: string; name: string; rag_profile: string; doc_count?: number };
+type HighlightRegion = {
+  page: number;
+  boxes: number[][];
+  page_width: number;
+  page_height: number;
+};
 type HighlightSpan = {
   chunk_id: string;
   document_id: string;
@@ -22,6 +30,11 @@ type HighlightSpan = {
   text_snippet?: string;
   filename?: string;
   page_number?: number | null;
+  mime_type?: string | null;
+  has_original?: boolean;
+  version_number?: number | null;
+  highlight_regions?: HighlightRegion[] | null;
+  view_modes?: string[];
 };
 type ChunkDetail = {
   chunk_id: string;
@@ -32,6 +45,11 @@ type ChunkDetail = {
   char_end: number;
   text: string;
   excerpt: string;
+  version_number?: number | null;
+  mime_type?: string | null;
+  has_original?: boolean;
+  highlight_regions?: HighlightRegion[] | null;
+  view_modes?: string[];
 };
 type DocumentView = {
   document_id: string;
@@ -40,6 +58,11 @@ type DocumentView = {
   highlight_start: number | null;
   highlight_end: number | null;
   page_number: number | null;
+  mime_type?: string | null;
+  has_original?: boolean;
+  version_number?: number | null;
+  highlight_regions?: HighlightRegion[] | null;
+  view_modes?: string[];
 };
 type DocumentHighlightParts = { before: string; highlight: string; after: string };
 type AskResponse = {
@@ -95,7 +118,16 @@ const RAG_PROFILES = [
 
 @Component({
   standalone: true,
-  imports: [ReactiveFormsModule, FormsModule, MarkdownDirective, PromptPickerComponent, DecimalPipe, IconComponent],
+  imports: [
+    ReactiveFormsModule,
+    FormsModule,
+    MarkdownDirective,
+    PromptPickerComponent,
+    DecimalPipe,
+    IconComponent,
+    DocumentAdminPanelComponent,
+    OriginalDocumentViewerComponent,
+  ],
   template: `
     <div class="page page-chat">
       <div class="page-header">
@@ -248,7 +280,13 @@ const RAG_PROFILES = [
                     }
                   </div>
                   <div class="job-detail" [class.msg-err]="j.status === 'failed'" [class.msg-ok]="j.status === 'completed'">
-                    {{ j.status === 'failed' ? (j.error || j.detail) : j.detail }}
+                    @if (j.status === 'failed') {
+                      {{ j.error || j.detail }}
+                    } @else if (j.error) {
+                      {{ j.detail }} — {{ j.error }}
+                    } @else {
+                      {{ j.detail }}
+                    }
                     @if (j.kind === 'scrape' && j.status === 'processing' && j.progress_total) {
                       <span class="prog"> ({{ j.progress_current }}/{{ j.progress_total }})</span>
                     }
@@ -292,7 +330,7 @@ const RAG_PROFILES = [
             }
           </aside>
 
-          <!-- ── Right: chat ── -->
+          <!-- ── Right: chat or admin ── -->
           <div class="chat-panel">
             @if (!selectedCollection()) {
               <div class="chat-welcome">
@@ -308,7 +346,11 @@ const RAG_PROFILES = [
                   <strong>{{ selectedCollection()!.name }}</strong>
                   <span class="badge">{{ selectedCollection()!.rag_profile }}</span>
                 </div>
-                @if (activeConversationId()) {
+                <div class="workspace-tabs" role="tablist" aria-label="Collection workspace">
+                  <button type="button" class="workspace-tab" role="tab" [class.active]="workspaceMode() === 'chat'" (click)="workspaceMode.set('chat')">Chat</button>
+                  <button type="button" class="workspace-tab" role="tab" [class.active]="workspaceMode() === 'admin'" (click)="workspaceMode.set('admin')">Admin</button>
+                </div>
+                @if (workspaceMode() === 'chat' && activeConversationId()) {
                   <div class="chat-panel-head-actions">
                     <button type="button" class="icon-btn xs" (click)="exportConversation('markdown')">Export MD</button>
                     <button type="button" class="icon-btn xs" (click)="exportConversation('pdf')">Export PDF</button>
@@ -317,6 +359,9 @@ const RAG_PROFILES = [
                 }
               </div>
 
+              @if (workspaceMode() === 'admin') {
+                <app-document-admin-panel [collectionId]="selectedCollection()!.id" />
+              } @else {
               <div class="chat-messages" #messagesPane role="log" aria-live="polite" aria-label="Conversation messages">
                 @if (messages().length === 0 && !loading()) {
                   <div class="chat-welcome">
@@ -463,6 +508,7 @@ const RAG_PROFILES = [
                   <div class="chat-composer-hint">Answers include source citations · Follow-ups keep context</div>
                 </div>
               </form>
+              }
             }
           </div>
         </div>
@@ -471,27 +517,48 @@ const RAG_PROFILES = [
 
     @if (documentViewOpen()) {
       <div class="modal-backdrop" (click)="closeDocumentView()">
-        <div class="modal doc-view-modal" role="dialog" aria-modal="true" [attr.aria-label]="documentView()?.filename ?? 'Document'" (click)="$event.stopPropagation()">
+        <div class="modal doc-view-modal" [class.doc-view-modal-wide]="documentViewMode() === 'original'" role="dialog" aria-modal="true" [attr.aria-label]="documentView()?.filename ?? 'Document'" (click)="$event.stopPropagation()">
           <div class="modal-head">
-            <h2>{{ documentView()?.filename ?? 'Document' }}</h2>
+            <div>
+              <h2>{{ documentView()?.filename ?? 'Document' }}</h2>
+              @if (documentView()?.version_number) {
+                <p class="preview-meta">Version {{ documentView()!.version_number }}</p>
+              }
+            </div>
             <button type="button" class="icon-btn" aria-label="Close" (click)="closeDocumentView()"><app-icon name="close" [size]="14" /></button>
           </div>
+          @if (supportsOriginalView(documentView()?.view_modes)) {
+            <div class="view-mode-tabs" role="tablist" aria-label="Document view mode">
+              <button type="button" class="view-mode-tab" role="tab" [class.active]="documentViewMode() === 'extracted'" (click)="documentViewMode.set('extracted')">Extracted text</button>
+              <button type="button" class="view-mode-tab" role="tab" [class.active]="documentViewMode() === 'original'" (click)="documentViewMode.set('original')">Original document</button>
+            </div>
+          }
           @if (documentViewLoading()) {
             <p class="modal-hint">Loading document…</p>
           } @else if (documentView()) {
-            <p class="preview-meta">
-              @if (documentView()!.page_number) { Page {{ documentView()!.page_number }} · }
-              @if (documentView()!.highlight_start != null && documentView()!.highlight_end != null) {
-                Highlighted characters {{ documentView()!.highlight_start }}–{{ documentView()!.highlight_end }}
-              }
-            </p>
-            <div class="doc-view-scroll">
-              @if (documentHighlightParts()) {
-                <pre class="doc-view-text"><span>{{ documentHighlightParts()!.before }}</span><mark id="chunk-highlight" class="chunk-highlight">{{ documentHighlightParts()!.highlight }}</mark><span>{{ documentHighlightParts()!.after }}</span></pre>
-              } @else {
-                <pre class="doc-view-text">{{ documentView()!.content }}</pre>
-              }
-            </div>
+            @if (documentViewMode() === 'original' && supportsOriginalView(documentView()!.view_modes)) {
+              <app-original-document-viewer
+                [documentId]="documentView()!.document_id"
+                [mimeType]="documentView()!.mime_type ?? null"
+                [filename]="documentView()!.filename"
+                [highlightRegions]="activeCitationHighlight()?.highlight_regions ?? documentView()!.highlight_regions ?? null"
+                [textSnippet]="activeCitationHighlight()?.text_snippet ?? ''"
+              />
+            } @else {
+              <p class="preview-meta">
+                @if (documentView()!.page_number) { Page {{ documentView()!.page_number }} · }
+                @if (documentView()!.highlight_start != null && documentView()!.highlight_end != null) {
+                  Highlighted characters {{ documentView()!.highlight_start }}–{{ documentView()!.highlight_end }}
+                }
+              </p>
+              <div class="doc-view-scroll">
+                @if (documentHighlightParts()) {
+                  <pre class="doc-view-text"><span>{{ documentHighlightParts()!.before }}</span><mark id="chunk-highlight" class="chunk-highlight">{{ documentHighlightParts()!.highlight }}</mark><span>{{ documentHighlightParts()!.after }}</span></pre>
+                } @else {
+                  <pre class="doc-view-text">{{ documentView()!.content }}</pre>
+                }
+              </div>
+            }
           }
         </div>
       </div>
@@ -499,7 +566,7 @@ const RAG_PROFILES = [
 
     @if (sourcePreviewOpen()) {
       <div class="modal-backdrop" (click)="closeSourcePreview()">
-        <div class="modal preview-modal" role="dialog" aria-modal="true" aria-label="Source preview" (click)="$event.stopPropagation()">
+        <div class="modal preview-modal" [class.doc-view-modal-wide]="sourcePreviewViewMode() === 'original'" role="dialog" aria-modal="true" aria-label="Source preview" (click)="$event.stopPropagation()">
           <div class="modal-head">
             <h2>Source preview</h2>
             <button type="button" class="icon-btn" aria-label="Close" (click)="closeSourcePreview()"><app-icon name="close" [size]="14" /></button>
@@ -507,12 +574,29 @@ const RAG_PROFILES = [
           @if (sourcePreviewLoading()) {
             <p class="modal-hint">Loading excerpt…</p>
           } @else if (sourcePreview()) {
+            @if (supportsOriginalView(sourcePreview()!.view_modes)) {
+              <div class="view-mode-tabs" role="tablist" aria-label="Source view mode">
+                <button type="button" class="view-mode-tab" role="tab" [class.active]="sourcePreviewViewMode() === 'extracted'" (click)="sourcePreviewViewMode.set('extracted')">Extracted text</button>
+                <button type="button" class="view-mode-tab" role="tab" [class.active]="sourcePreviewViewMode() === 'original'" (click)="sourcePreviewViewMode.set('original')">Original document</button>
+              </div>
+            }
             <p class="preview-meta">
               <strong>{{ sourcePreview()!.filename }}</strong>
               @if (sourcePreview()!.page_number) { · Page {{ sourcePreview()!.page_number }} }
+              @if (sourcePreview()!.version_number) { · v{{ sourcePreview()!.version_number }} }
               · Characters {{ sourcePreview()!.char_start }}–{{ sourcePreview()!.char_end }}
             </p>
-            <pre class="preview-text">{{ sourcePreview()!.text }}</pre>
+            @if (sourcePreviewViewMode() === 'original' && supportsOriginalView(sourcePreview()!.view_modes)) {
+              <app-original-document-viewer
+                [documentId]="sourcePreview()!.document_id"
+                [mimeType]="sourcePreview()!.mime_type ?? null"
+                [filename]="sourcePreview()!.filename"
+                [highlightRegions]="sourcePreview()!.highlight_regions ?? null"
+                [textSnippet]="sourcePreview()!.text"
+              />
+            } @else {
+              <pre class="preview-text">{{ sourcePreview()!.text }}</pre>
+            }
           }
         </div>
       </div>
@@ -824,6 +908,21 @@ const RAG_PROFILES = [
       color: var(--text); padding: 0 2px; border-radius: 2px;
       box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--warning, #d29922) 70%, transparent);
     }
+    .workspace-tabs, .view-mode-tabs {
+      display: inline-flex; gap: 4px; padding: 3px;
+      border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2);
+    }
+    .workspace-tab, .view-mode-tab {
+      border: none; background: transparent; color: var(--text-2);
+      padding: 6px 12px; border-radius: var(--radius-pill); cursor: pointer;
+      font-size: var(--text-xs); font-weight: 650; font-family: inherit;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    .workspace-tab.active, .view-mode-tab.active {
+      background: var(--primary-soft); color: var(--primary-text);
+    }
+    .doc-view-modal-wide { width: min(980px, 100%); }
+    .view-mode-tabs { margin-bottom: var(--space-4); }
   `],
 })
 export class TalkToDocsComponent implements OnInit, OnDestroy {
@@ -845,6 +944,10 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
   readonly documentView = signal<DocumentView | null>(null);
   readonly documentViewLoading = signal(false);
   readonly documentViewOpen = signal(false);
+  readonly documentViewMode = signal<'extracted' | 'original'>('extracted');
+  readonly sourcePreviewViewMode = signal<'extracted' | 'original'>('extracted');
+  readonly activeCitationHighlight = signal<HighlightSpan | null>(null);
+  readonly workspaceMode = signal<'chat' | 'admin'>('chat');
   readonly documentHighlightParts = computed((): DocumentHighlightParts | null => {
     const doc = this.documentView();
     if (!doc || doc.highlight_start == null || doc.highlight_end == null) return null;
@@ -1204,6 +1307,7 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
   openSourcePreview(chunkId: string): void {
     this.documentViewOpen.set(false);
     this.sourcePreview.set(null);
+    this.sourcePreviewViewMode.set('extracted');
     this.sourcePreviewOpen.set(true);
     this.sourcePreviewLoading.set(true);
     this.http.get<ChunkDetail>(`${API_BASE}/talk-to-docs/chunks/${encodeURIComponent(chunkId)}`).subscribe({
@@ -1218,9 +1322,16 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     });
   }
 
+  supportsOriginalView(viewModes?: string[] | null): boolean {
+    if (!viewModes?.length) return false;
+    return viewModes.includes('original_pdf') || viewModes.includes('original_word');
+  }
+
   openDocumentView(h: HighlightSpan): void {
     this.sourcePreviewOpen.set(false);
     this.documentView.set(null);
+    this.documentViewMode.set('extracted');
+    this.activeCitationHighlight.set(h);
     this.documentViewOpen.set(true);
     this.documentViewLoading.set(true);
 
@@ -1236,9 +1347,11 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
           next: (doc) => {
             this.documentView.set(doc);
             this.documentViewLoading.set(false);
-            window.setTimeout(() => {
-              document.getElementById('chunk-highlight')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 50);
+            if (this.documentViewMode() === 'extracted') {
+              window.setTimeout(() => {
+                document.getElementById('chunk-highlight')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 50);
+            }
           },
           error: (err: { error?: { detail?: string } }) => {
             this.documentViewLoading.set(false);
@@ -1253,7 +1366,19 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     }
 
     this.http.get<ChunkDetail>(`${API_BASE}/talk-to-docs/chunks/${encodeURIComponent(h.chunk_id)}`).subscribe({
-      next: (detail) => loadDocument({ ...h, char_start: detail.char_start, char_end: detail.char_end, page_number: detail.page_number }),
+      next: (detail) => {
+        const merged: HighlightSpan = {
+          ...h,
+          char_start: detail.char_start,
+          char_end: detail.char_end,
+          page_number: detail.page_number,
+          highlight_regions: detail.highlight_regions ?? h.highlight_regions,
+          view_modes: detail.view_modes ?? h.view_modes,
+          mime_type: detail.mime_type ?? h.mime_type,
+        };
+        this.activeCitationHighlight.set(merged);
+        loadDocument(merged);
+      },
       error: () => {
         this.documentViewLoading.set(false);
         this.toast.error('Could not resolve source location in document.');
@@ -1265,12 +1390,15 @@ export class TalkToDocsComponent implements OnInit, OnDestroy {
     this.documentView.set(null);
     this.documentViewLoading.set(false);
     this.documentViewOpen.set(false);
+    this.documentViewMode.set('extracted');
+    this.activeCitationHighlight.set(null);
   }
 
   closeSourcePreview(): void {
     this.sourcePreview.set(null);
     this.sourcePreviewLoading.set(false);
     this.sourcePreviewOpen.set(false);
+    this.sourcePreviewViewMode.set('extracted');
   }
 
   @HostListener('document:keydown.escape')
