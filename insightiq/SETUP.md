@@ -503,7 +503,7 @@ All backend settings use prefix **`INSIGHTIQ_`** and nested **`__`**.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `INSIGHTIQ_ENV` | `dev` | In dev, auth can be relaxed; JWT keys auto-generated if missing |
-| `INSIGHTIQ_DATABASE__URL` | `postgresql+asyncpg://insightiq:insightiq@localhost:5432/insightiq` | **Must match your Postgres** |
+| `INSIGHTIQ_DATABASE__URL` | `postgresql+asyncpg://insightiq:insightiq@localhost:5432/insightiq` | App metadata DB — PostgreSQL (default) or SQLite |
 | `INSIGHTIQ_REDIS__URL` | `redis://localhost:6379/0` | See §6 if Redis unavailable |
 | `INSIGHTIQ_QDRANT__URL` | `http://localhost:6333` | Required for Talk to Docs |
 | `INSIGHTIQ_JWT__PRIVATE_KEY_PEM` | auto in dev | Use `generate_dev_keys.py` for stable keys across restarts |
@@ -522,6 +522,24 @@ export OPENAI_API_KEY="sk-..."
 ```
 
 Frontend API URL: edit `frontend/src/app/core/api.config.ts` if the gateway is not on `http://localhost:8000`.
+
+### SQLite instead of PostgreSQL (local dev)
+
+If you do not have PostgreSQL, the app metadata database can run on **SQLite** via the async driver:
+
+```bash
+export INSIGHTIQ_DATABASE__URL="sqlite+aiosqlite:///./insightiq.dev.db"
+cd insightiq/backend
+uv run alembic upgrade head
+uv run uvicorn gateway.main:app --reload --port 8000
+```
+
+Notes:
+
+- PostgreSQL remains the recommended choice for production and team deployments.
+- SQLite uses the same SQLAlchemy models and Alembic migrations (portable UUID/JSON types).
+- Qdrant, Redis, and Neo4j are still required for full Talk to Docs / GraphRAG features — only the **app DB** can be SQLite.
+- Use `sqlite+aiosqlite:///:memory:` in tests for an ephemeral database.
 
 ---
 

@@ -20,7 +20,21 @@ class JwtSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
+    """Application metadata database. Set ``url`` to PostgreSQL or SQLite async driver URL.
+
+    PostgreSQL (default):
+      ``postgresql+asyncpg://user:pass@localhost:5432/insightiq``
+
+    SQLite (local dev / no Postgres):
+      ``sqlite+aiosqlite:///./insightiq.dev.db``
+      ``sqlite+aiosqlite:///:memory:`` (tests)
+    """
+
     url: str = "postgresql+asyncpg://insightiq:insightiq@localhost:5432/insightiq"
+
+    @property
+    def backend(self) -> str:
+        return "sqlite" if self.url.startswith("sqlite") else "postgresql"
 
 
 class QdrantSettings(BaseModel):

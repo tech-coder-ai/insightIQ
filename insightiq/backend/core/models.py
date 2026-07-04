@@ -4,9 +4,9 @@ import datetime as dt
 import uuid
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from core.db_types import GUID, JSONType
 from core.types import Role
 
 
@@ -17,7 +17,7 @@ class Base(DeclarativeBase):
 class Tenant(Base):
     __tablename__ = "tenants"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -25,14 +25,18 @@ class Tenant(Base):
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+        GUID, ForeignKey("tenants.id", ondelete="CASCADE"), index=True
     )
 
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(200))
-    role: Mapped[Role] = mapped_column(Enum(Role, name="role"), default=Role.viewer, index=True)
+    role: Mapped[Role] = mapped_column(
+        Enum(Role, name="role", native_enum=False, values_callable=lambda enum: [item.value for item in enum]),
+        default=Role.viewer,
+        index=True,
+    )
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -41,15 +45,15 @@ class User(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
-    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     role: Mapped[str] = mapped_column(String(32))  # "user" | "assistant" | "system"
     content: Mapped[str] = mapped_column(Text())
 
-    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSONType, default=dict)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -57,19 +61,19 @@ class ChatMessage(Base):
 class DataSource(Base):
     __tablename__ = "data_sources"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     name: Mapped[str] = mapped_column(String(200))
     db_type: Mapped[str] = mapped_column(String(64))
     dialect: Mapped[str] = mapped_column(String(64), default="postgres")
     description: Mapped[str] = mapped_column(Text(), default="")
     metadata_status: Mapped[str] = mapped_column(String(32), default="draft")
-    connection_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    schema_snapshot_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    selected_scope_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    relationships_json: Mapped[list] = mapped_column(JSONB, default=list)
-    glossary_json: Mapped[list] = mapped_column(JSONB, default=list)
+    connection_config_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    schema_snapshot_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    selected_scope_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    relationships_json: Mapped[list] = mapped_column(JSONType, default=list)
+    glossary_json: Mapped[list] = mapped_column(JSONType, default=list)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -77,15 +81,15 @@ class DataSource(Base):
 class Conversation(Base):
     __tablename__ = "conversations"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     title: Mapped[str] = mapped_column(String(300), default="New conversation")
     folder: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    tags: Mapped[list] = mapped_column(JSONB, default=list)
+    tags: Mapped[list] = mapped_column(JSONType, default=list)
     starred: Mapped[bool] = mapped_column(Boolean, default=False)
-    datasource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    datasource_id: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -96,8 +100,8 @@ class Conversation(Base):
 class DocumentCollection(Base):
     __tablename__ = "document_collections"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     name: Mapped[str] = mapped_column(String(200))
     rag_profile: Mapped[str] = mapped_column(String(64), default="standard")
     embedding_model: Mapped[str] = mapped_column(String(128), default="hash-dev")
@@ -107,13 +111,13 @@ class DocumentCollection(Base):
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    registry_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    registry_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    collection_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     filename: Mapped[str] = mapped_column(String(500))
     content_markdown: Mapped[str] = mapped_column(Text(), default="")
-    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     version_number: Mapped[int] = mapped_column(default=1)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -122,7 +126,7 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(32), default="active")
     file_size_bytes: Mapped[int | None] = mapped_column(nullable=True)
     page_count: Mapped[int | None] = mapped_column(nullable=True)
-    ingested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    ingested_by: Mapped[uuid.UUID | None] = mapped_column(GUID, nullable=True)
     superseded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -130,10 +134,10 @@ class Document(Base):
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    collection_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     chunk_index: Mapped[int] = mapped_column()
     text: Mapped[str] = mapped_column(Text())
     char_start: Mapped[int] = mapped_column()
@@ -144,20 +148,20 @@ class DocumentChunk(Base):
     # child chunk belongs to, sliced on demand from Document.content_markdown.
     parent_char_start: Mapped[int | None] = mapped_column(nullable=True)
     parent_char_end: Mapped[int | None] = mapped_column(nullable=True)
-    bbox_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    highlight_regions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    bbox_json: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    highlight_regions: Mapped[list | None] = mapped_column(JSONType, nullable=True)
     version_number: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class Dashboard(Base):
     __tablename__ = "dashboards"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     name: Mapped[str] = mapped_column(String(200))
-    global_filters_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    team_access_json: Mapped[list] = mapped_column(JSONB, default=list)
+    global_filters_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    team_access_json: Mapped[list] = mapped_column(JSONType, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -167,17 +171,17 @@ class Dashboard(Base):
 class DashboardCard(Base):
     __tablename__ = "dashboard_cards"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dashboard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     title: Mapped[str] = mapped_column(String(300))
     card_type: Mapped[str] = mapped_column(String(64))
-    layout_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    layout_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     refresh_mode: Mapped[str] = mapped_column(String(32), default="snapshot")  # live | snapshot
     source_type: Mapped[str] = mapped_column(String(32))  # sql | rag | prompt
-    source_config_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    snapshot_response_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    source_config_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    snapshot_response_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     auto_refresh_seconds: Mapped[int | None] = mapped_column(nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -189,9 +193,9 @@ class DashboardCard(Base):
 class DashboardShare(Base):
     __tablename__ = "dashboard_shares"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    dashboard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
     token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     read_only: Mapped[bool] = mapped_column(Boolean, default=True)
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -201,13 +205,13 @@ class DashboardShare(Base):
 class PromptTemplate(Base):
     __tablename__ = "prompt_templates"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str] = mapped_column(Text(), default="")
-    bindings_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    bindings_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     is_shared: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -219,15 +223,15 @@ class PromptTemplate(Base):
 class PromptVersion(Base):
     __tablename__ = "prompt_versions"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     version_number: Mapped[int] = mapped_column()
     template_body: Mapped[str] = mapped_column(Text())
     system_prompt: Mapped[str] = mapped_column(Text(), default="")
-    variables_schema_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    variables_schema_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_by: Mapped[uuid.UUID] = mapped_column(GUID)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -235,17 +239,17 @@ class PromptVersion(Base):
 class PromptRun(Base):
     __tablename__ = "prompt_runs"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    version_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
-    variables_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    variables_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     rendered_prompt: Mapped[str] = mapped_column(Text())
     output: Mapped[str] = mapped_column(Text())
-    eval_scores_json: Mapped[dict] = mapped_column(JSONB, default=dict)
-    response_payload_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    eval_scores_json: Mapped[dict] = mapped_column(JSONType, default=dict)
+    response_payload_json: Mapped[dict] = mapped_column(JSONType, default=dict)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -253,15 +257,15 @@ class PromptRun(Base):
 class AuditEvent(Base):
     __tablename__ = "audit_events"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True, nullable=True)
-    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True, nullable=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(GUID, index=True, nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(GUID, index=True, nullable=True)
 
     action: Mapped[str] = mapped_column(String(64), index=True)
     resource_type: Mapped[str] = mapped_column(String(64), index=True)
     resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
-    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(JSONType, default=dict)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -269,10 +273,10 @@ class AuditEvent(Base):
 class ScheduledReport(Base):
     __tablename__ = "scheduled_reports"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    dashboard_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    dashboard_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(GUID, index=True)
 
     recipient_email: Mapped[str] = mapped_column(String(320))
     interval_seconds: Mapped[int] = mapped_column(default=3600)

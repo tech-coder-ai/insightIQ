@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
+from migrations.portable import bool_default, drop_pg_enum, json_array_default, json_col, json_object_default, now_default, user_role_column, uuid_col
 
 revision = "0007_hardening"
 down_revision = "0006_prompt_studio"
@@ -20,16 +20,16 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "audit_events",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("id", uuid_col(), primary_key=True, nullable=False),
+        sa.Column("tenant_id", uuid_col(), nullable=True),
+        sa.Column("user_id", uuid_col(), nullable=True),
         sa.Column("action", sa.String(length=64), nullable=False),
         sa.Column("resource_type", sa.String(length=64), nullable=False),
         sa.Column("resource_id", sa.String(length=64), nullable=True),
         sa.Column("correlation_id", sa.String(length=64), nullable=True),
-        sa.Column("metadata_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
+        sa.Column("metadata_json", json_col(), server_default=json_object_default(), nullable=False),
         sa.Column("ip_address", sa.String(length=64), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=now_default(), nullable=False),
     )
     op.create_index("ix_audit_events_tenant_id", "audit_events", ["tenant_id"])
     op.create_index("ix_audit_events_action", "audit_events", ["action"])

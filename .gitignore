@@ -22,6 +22,8 @@ insightiq/frontend/public/assets/pdfjs/*.mjs
 *.pem
 
 **/uploads/
+*.dev.db
+insightiq.dev.db
 **/postgres_data/
 **/qdrant_data/
 **/neo4j_data/

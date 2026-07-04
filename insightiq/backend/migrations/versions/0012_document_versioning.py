@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
+from migrations.portable import bool_default, drop_pg_enum, json_array_default, json_col, json_object_default, now_default, user_role_column, uuid_col
 
 revision = "0012_document_versioning"
 down_revision = "0011_chunk_parent_offsets"
@@ -18,16 +18,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("documents", sa.Column("registry_id", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column("documents", sa.Column("registry_id", uuid_col(), nullable=True))
     op.add_column("documents", sa.Column("version_number", sa.Integer(), server_default="1", nullable=False))
-    op.add_column("documents", sa.Column("is_current", sa.Boolean(), server_default="true", nullable=False))
+    op.add_column("documents", sa.Column("is_current", sa.Boolean(), server_default=bool_default(True), nullable=False))
     op.add_column("documents", sa.Column("storage_path", sa.String(length=1024), nullable=True))
     op.add_column("documents", sa.Column("mime_type", sa.String(length=128), nullable=True))
     op.add_column("documents", sa.Column("content_hash", sa.String(length=64), nullable=True))
     op.add_column("documents", sa.Column("status", sa.String(length=32), server_default="active", nullable=False))
     op.add_column("documents", sa.Column("file_size_bytes", sa.BigInteger(), nullable=True))
     op.add_column("documents", sa.Column("page_count", sa.Integer(), nullable=True))
-    op.add_column("documents", sa.Column("ingested_by", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column("documents", sa.Column("ingested_by", uuid_col(), nullable=True))
     op.add_column("documents", sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True))
 
     op.execute("UPDATE documents SET registry_id = id WHERE registry_id IS NULL")
@@ -36,8 +36,8 @@ def upgrade() -> None:
     op.create_index("ix_documents_registry_id", "documents", ["registry_id"])
     op.create_index("ix_documents_collection_current", "documents", ["collection_id", "is_current"])
 
-    op.add_column("document_chunks", sa.Column("bbox_json", postgresql.JSONB(), nullable=True))
-    op.add_column("document_chunks", sa.Column("highlight_regions", postgresql.JSONB(), nullable=True))
+    op.add_column("document_chunks", sa.Column("bbox_json", json_col(), nullable=True))
+    op.add_column("document_chunks", sa.Column("highlight_regions", json_col(), nullable=True))
     op.add_column("document_chunks", sa.Column("version_number", sa.Integer(), nullable=True))
 
 
